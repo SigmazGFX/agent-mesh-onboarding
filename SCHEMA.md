@@ -86,6 +86,7 @@ Key storage: SHA-256 hash only. Plaintext shown exactly once at creation.
   "status": "queued",
   "created_by": "vps-orch-01",
   "assigned_to": null,
+  "project_id": "proj-abc123",
   "deadline": null,
   "retry": {"max": 3, "backoff_s": 10},
   "result": null,
@@ -97,6 +98,22 @@ Key storage: SHA-256 hash only. Plaintext shown exactly once at creation.
 Task status lifecycle:
 `queued → claimed → in_progress → done | failed | cancelled`
 then optionally `→ approved | rejected` (by qa/reviewer).
+
+### Project
+```json
+{
+  "id": "proj-abc123",
+  "name": "Refactor auth service",
+  "description": "Split the monolithic token module",
+  "context": {"repo": "~/Work/demo", "branch": "main"},
+  "status": "active",
+  "owner_agent": "vps-orch-01",
+  "created_at": 1759315200.0,
+  "updated_at": 1759315200.0
+}
+```
+`status`: `active | paused | done | cancelled`. `GET /api/projects/{id}` also
+returns `tasks` (per-status counts) and `task_items` (the task list).
 
 ### Event (audit log)
 Every state change appends an event: `{ts, actor, type, task_id, detail}`.
@@ -143,6 +160,25 @@ HTTP status (401 bad/missing key, 403 role-forbidden, 404 unknown id,
 | POST | `/api/tasks/{id}/cancel` | creator/higher | Cancel queued/in-progress task. |
 | POST | `/api/tasks/{id}/review` | qa/reviewer/orchestrator | Body: `{verdict: approved\|rejected, note?}`. |
 | POST | `/api/tasks/{id}/requeue` | orchestrator/planner | Put a failed/cancelled task back to `queued`. |
+
+### Projects
+A project groups related tasks (and carries shared context like repo/branch).
+Created by orchestrator/planner; any authenticated agent can read.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/projects` | agent | List projects (with per-status task counts). `?status=` filter. |
+| POST | `/api/projects` | orchestrator/planner | Create. Body: `{name, description?, context?}`. Returns project. |
+| GET | `/api/projects/{id}` | agent | One project + its `task_items` list + counts. |
+| PATCH | `/api/projects/{id}` | orchestrator/planner | Update. Body: `{name?, description?, context?, status?}` (status: active\|paused\|done\|cancelled). |
+
+Tasks link to a project via `project_id` (set at creation; filter with
+`GET /api/tasks?project_id=…`).
+
+### Orchestrator (member spawning)
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/orch/spawn-member` | orchestrator/planner | Mint a NEW swarm member on demand. Body: `{name, role?, caps?}`. Returns the new agent + one-time key. A planner may only spawn `worker`/`observer`; only an orchestrator may spawn `qa`/`reviewer`/`orchestrator`. |
 
 ### Artifacts
 | Method | Path | Auth | Description |

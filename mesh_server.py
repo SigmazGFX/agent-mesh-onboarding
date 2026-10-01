@@ -82,6 +82,17 @@ class Store:
             created_at REAL NOT NULL,
             last_seen REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS projects(
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            context TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'active',
+            owner_agent TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
         CREATE TABLE IF NOT EXISTS tasks(
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
@@ -91,6 +102,7 @@ class Store:
             status TEXT NOT NULL DEFAULT 'queued',
             created_by TEXT,
             assigned_to TEXT,
+            project_id TEXT,
             deadline REAL,
             retry TEXT NOT NULL DEFAULT '{"max":3,"backoff_s":10}',
             result TEXT,
@@ -120,6 +132,14 @@ class Store:
         );
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
         """)
+        # Migration: add project_id to tasks for DBs created before projects.
+        cols = [r["name"] for r in c.execute("PRAGMA table_info(tasks)")]
+        if "project_id" not in cols:
+            c.execute("ALTER TABLE tasks ADD COLUMN project_id TEXT")
+        # Index lives here (not in the CREATE script) so it works whether the
+        # column was just added or existed from a fresh schema.
+        c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project "
+                  "ON tasks(project_id)")
         c.commit()
 
     # -- helpers
@@ -190,20 +210,20 @@ class Store:
 
     # -- tasks
     def add_task(self, tid, title, kind, spec, priority, created_by,
-                 assigned_to, deadline, retry):
+                 assigned_to, deadline, retry, project_id=None):
         t = now()
         self.ex("INSERT INTO tasks(id,title,kind,spec,priority,status,"
-                "created_by,assigned_to,deadline,retry,result,artifacts,"
-                "created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?,?,?,"
-                "NULL,'[]',?,?)",
+                "created_by,assigned_to,project_id,deadline,retry,result,"
+                "artifacts,created_at,updated_at) VALUES(?,?,?,?,?,'queued',"
+                "?,?,?,?,?,NULL,'[]',?,?)",
                 (tid, title, kind, json.dumps(spec), priority, created_by,
-                 assigned_to, deadline, json.dumps(retry), t, t))
+                 assigned_to, project_id, deadline, json.dumps(retry), t, t))
 
     def get_task(self, tid):
         return self.q1("SELECT * FROM tasks WHERE id=?", (tid,))
 
     def list_tasks(self, status=None, assigned_to=None, created_by=None,
-                   limit=50):
+                   project_id=None, limit=50):
         sql = "SELECT * FROM tasks"
         where, args = [], []
         if status:
@@ -212,6 +232,8 @@ class Store:
             where.append("assigned_to=?"); args.append(assigned_to)
         if created_by:
             where.append("created_by=?"); args.append(created_by)
+        if project_id:
+            where.append("project_id=?"); args.append(project_id)
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY priority ASC, created_at ASC LIMIT ?"
@@ -220,7 +242,8 @@ class Store:
 
     def update_task(self, tid, **fields):
         allowed = {"title", "kind", "spec", "priority", "status",
-                   "assigned_to", "deadline", "retry", "result", "artifacts"}
+                   "assigned_to", "project_id", "deadline", "retry",
+                   "result", "artifacts"}
         sets, args = [], []
         for k, v in fields.items():
             if k in allowed:
@@ -251,6 +274,47 @@ class Store:
         else:
             r = self.q1("SELECT COUNT(*) n FROM tasks WHERE status='queued'")
         return r["n"] if r else 0
+
+    # -- projects
+    def add_project(self, pid, name, description, context, owner_agent):
+        t = now()
+        self.ex("INSERT INTO projects(id,name,description,context,status,"
+                "owner_agent,created_at,updated_at) VALUES(?,?,?,?, 'active',"
+                "?,?,?)",
+                (pid, name, description, json.dumps(context), owner_agent,
+                 t, t))
+
+    def get_project(self, pid):
+        return self.q1("SELECT * FROM projects WHERE id=?", (pid,))
+
+    def list_projects(self, status=None, limit=50):
+        sql = "SELECT * FROM projects"
+        where, args = [], []
+        if status:
+            where.append("status=?"); args.append(status)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        args.append(limit)
+        return self.q(sql, args)
+
+    def update_project(self, pid, **fields):
+        allowed = {"name", "description", "context", "status", "owner_agent"}
+        sets, args = [], []
+        for k, v in fields.items():
+            if k in allowed:
+                sets.append(f"{k}=?")
+                args.append(v)
+        if sets:
+            sets.append("updated_at=?")
+            args.append(now())
+            args.append(pid)
+            self.ex(f"UPDATE projects SET {', '.join(sets)} WHERE id=?", args)
+
+    def project_task_counts(self, pid):
+        rows = self.q("SELECT status, COUNT(*) n FROM tasks WHERE project_id="
+                      "? GROUP BY status", (pid,))
+        return {r["status"]: r["n"] for r in rows}
 
     # -- events
     def add_event(self, actor, etype, task_id=None, detail=None):
@@ -367,10 +431,25 @@ class Mesh:
             "id": row["id"], "title": row["title"], "kind": row["kind"],
             "spec": spec, "priority": row["priority"],
             "status": row["status"], "created_by": row["created_by"],
-            "assigned_to": row["assigned_to"], "deadline": row["deadline"],
+            "assigned_to": row["assigned_to"],
+            "project_id": row["project_id"] if "project_id" in row.keys()
+            else None,
+            "deadline": row["deadline"],
             "retry": retry, "result": result, "artifacts": arts,
             "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
+
+    def project_pub(self, row, with_counts=False):
+        ctx = json.loads(row["context"]) if row["context"] else {}
+        out = {
+            "id": row["id"], "name": row["name"],
+            "description": row["description"], "context": ctx,
+            "status": row["status"], "owner_agent": row["owner_agent"],
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
+        }
+        if with_counts:
+            out["tasks"] = self.store.project_task_counts(row["id"])
+        return out
 
     def event_pub(self, row):
         detail = json.loads(row["detail"]) if row["detail"] else None
@@ -482,6 +561,10 @@ class Handler(BaseHTTPRequestHandler):
         ("POST",   r"^/api/tasks$",                            "ep_create_task"),
         ("GET",    r"^/api/tasks$",                            "ep_list_tasks"),
         ("GET",    r"^/api/tasks/(?P<id>[^/]+)$",              "ep_get_task"),
+        ("GET",    r"^/api/projects$",                         "ep_list_projects"),
+        ("POST",   r"^/api/projects$",                         "ep_create_project"),
+        ("GET",    r"^/api/projects/(?P<id>[^/]+)$",           "ep_get_project"),
+        ("PATCH",  r"^/api/projects/(?P<id>[^/]+)$",           "ep_update_project"),
         ("GET",    r"^/api/work/pull$",                        "ep_pull"),
         ("POST",   r"^/api/tasks/(?P<id>[^/]+)/start$",        "ep_start"),
         ("POST",   r"^/api/tasks/(?P<id>[^/]+)/progress$",     "ep_progress"),
@@ -498,6 +581,7 @@ class Handler(BaseHTTPRequestHandler):
         ("DELETE", r"^/api/admin/keys/(?P<id>[^/]+)$",         "ep_admin_revoke"),
         ("PATCH",  r"^/api/admin/agents/(?P<id>[^/]+)$",       "ep_admin_patch"),
         ("POST",   r"^/api/admin/join-key$",                   "ep_admin_joinkey"),
+        ("POST",   r"^/api/orch/spawn-member$",                "ep_spawn_member"),
         ("GET",    r"^/api/admin/stats$",                      "ep_admin_stats"),
         ("GET",    r"^/$",                                     "ep_ui"),
     ]
@@ -678,12 +762,16 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("priority must be 0-5")
         deadline = body.get("deadline")
         assigned_to = body.get("assigned_to")
+        project_id = body.get("project_id")
         retry = body.get("retry") or {"max": 3, "backoff_s": 10}
+        if project_id and not self.store.get_project(project_id):
+            raise ValueError(f"unknown project_id '{project_id}'")
         tid = "task-" + uuid.uuid4().hex[:12]
         self.store.add_task(tid, title, kind, spec, priority, agent["id"],
-                            assigned_to, deadline, retry)
+                            assigned_to, deadline, retry, project_id)
         self.store.add_event(agent["id"], "task.created", tid,
-                             {"title": title, "priority": priority})
+                             {"title": title, "priority": priority,
+                              "project_id": project_id})
         self._send_json(self.mesh.task_pub(self.store.get_task(tid)), 201)
 
     def ep_list_tasks(self, g):
@@ -693,6 +781,7 @@ class Handler(BaseHTTPRequestHandler):
             status=(q.get("status") or [None])[0],
             assigned_to=(q.get("assigned_to") or [None])[0],
             created_by=(q.get("created_by") or [None])[0],
+            project_id=(q.get("project_id") or [None])[0],
             limit=min(int((q.get("limit") or ["50"])[0]), 200))
         self._send_json({"items": [self.mesh.task_pub(r) for r in items]})
 
@@ -706,6 +795,75 @@ class Handler(BaseHTTPRequestHandler):
             self._err(403, "not related to this task")
             return
         self._send_json(self.mesh.task_pub(row))
+
+    # ---- projects
+    def ep_list_projects(self, g):
+        self._auth()
+        q = parse_qs(urlparse(self.path).query)
+        items = self.store.list_projects(
+            status=(q.get("status") or [None])[0],
+            limit=min(int((q.get("limit") or ["50"])[0]), 200))
+        self._send_json({"items": [self.mesh.project_pub(r, with_counts=True)
+                                   for r in items]})
+
+    def ep_create_project(self, g):
+        agent = self._auth()
+        self.mesh.require_role(agent, CAP_DISPATCH, "create projects")
+        body = self._json_body()
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise ValueError("name required")
+        description = body.get("description") or ""
+        context = body.get("context") or {}
+        if not isinstance(context, dict):
+            raise ValueError("context must be an object")
+        pid = "proj-" + uuid.uuid4().hex[:12]
+        self.store.add_project(pid, name, description, context, agent["id"])
+        self.store.add_event(agent["id"], "project.created", None,
+                             {"project": pid, "name": name})
+        self._send_json(self.mesh.project_pub(self.store.get_project(pid),
+                                              with_counts=True), 201)
+
+    def ep_get_project(self, g):
+        self._auth()
+        row = self.store.get_project(g["id"])
+        if not row:
+            self._err(404, "unknown project")
+            return
+        out = self.mesh.project_pub(row, with_counts=True)
+        tasks = self.store.list_tasks(project_id=row["id"], limit=200)
+        out["task_items"] = [self.mesh.task_pub(t) for t in tasks]
+        self._send_json(out)
+
+    def ep_update_project(self, g):
+        agent = self._auth()
+        self.mesh.require_role(agent, CAP_DISPATCH, "update projects")
+        row = self.store.get_project(g["id"])
+        if not row:
+            self._err(404, "unknown project")
+            return
+        body = self._json_body()
+        fields = {}
+        if "name" in body and body["name"]:
+            fields["name"] = str(body["name"]).strip()
+        if "description" in body:
+            fields["description"] = body["description"]
+        if "context" in body:
+            if not isinstance(body["context"], dict):
+                raise ValueError("context must be an object")
+            fields["context"] = json.dumps(body["context"])
+        if "status" in body:
+            if body["status"] not in ("active", "paused", "done", "cancelled"):
+                raise ValueError("status must be active|paused|done|cancelled")
+            fields["status"] = body["status"]
+        if fields:
+            self.store.update_project(row["id"], **fields)
+            self.store.add_event(agent["id"], "project.updated", None,
+                                 {"project": row["id"], **{
+                                     k: v for k, v in fields.items()
+                                     if k != "context"}})
+        self._send_json(self.mesh.project_pub(self.store.get_project(row["id"]),
+                                              with_counts=True))
 
     def ep_pull(self, g):
         agent = self._auth()
@@ -1016,6 +1174,42 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"join_key": jk,
                          "note": "hand this to new agents; shown only once"})
 
+    def ep_spawn_member(self, g):
+        # Orchestrator-gated: mint a NEW swarm member on demand (the "agents
+        # create bots/members" capability). Only orchestrator/planner roles may
+        # spawn, and the spawned role is capped at 'worker' unless the caller is
+        # a full orchestrator — so a planner can't mint another orchestrator.
+        agent = self._auth()
+        self.mesh.require_role(agent, CAP_DISPATCH, "spawn members")
+        body = self._json_body()
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise ValueError("name required")
+        role = body.get("role") or "worker"
+        if role not in ROLES:
+            raise ValueError(f"role must be one of {list(ROLES)}")
+        # A non-orchestrator dispatcher cannot mint reviewer/orchestrator roles.
+        if agent["role"] != "orchestrator" and role in ("reviewer", "qa",
+                                                        "orchestrator"):
+            raise PermissionError(
+                "only an orchestrator can spawn that role")
+        caps = body.get("caps") or []
+        if not isinstance(caps, list) or not all(isinstance(c, str)
+                                                  for c in caps):
+            raise ValueError("caps must be a list of strings")
+        aid = (body.get("id") or "").strip() or \
+            f"{name.lower().replace(' ', '-')}-{uuid.uuid4().hex[:8]}"
+        if self.store.get_agent(aid):
+            raise ValueError(f"agent id '{aid}' already exists")
+        key = gen_key()
+        self.store.add_agent(aid, name, role, caps, sha256_hex(key.encode()))
+        self.store.touch_agent(aid)
+        self.store.add_event(agent["id"], "member.spawned", None,
+                             {"agent": aid, "role": role, "by": agent["id"]})
+        self._send_json({"agent": self.mesh.agent_pub(self.store.get_agent(aid)),
+                         "api_key": key,
+                         "note": "spawned member; key shown only once"}, 201)
+
     # ---- web UI
     def ep_ui(self, g):
         base = getattr(Handler, "base_path", "") or ""
@@ -1171,6 +1365,7 @@ function shell(active,title,inner){
     <div class="brand"><h1>agent-mesh</h1><span class="v">v${V}</span></div>
     <nav>
       <button class="${active==='dash'?'active':''}" onclick="go('#/')" >Dashboard</button>
+      <button class="${active==='projects'?'active':''}" onclick="go('#/projects')">Projects</button>
       <button class="${active==='agents'?'active':''}" onclick="go('#/agents')">Agents</button>
       <button class="${active==='tasks'?'active':''}" onclick="go('#/tasks')">Tasks</button>
       <button class="${active==='events'?'active':''}" onclick="go('#/events')">Events</button>
@@ -1190,12 +1385,14 @@ function shell(active,title,inner){
 let CACHE={};
 async function loadAll(){
   try{
-    const [agents,tasks,events,stats]=await Promise.all([
+    const [agents,tasks,events,stats,projects]=await Promise.all([
       api("/api/admin/keys",{admin:true}),
       api("/api/tasks?limit=200"),
       api("/api/events?limit=60"),
-      api("/api/admin/stats",{admin:true})]);
-    CACHE={agents:agents.items,tasks:tasks.items,events:events.items,stats};
+      api("/api/admin/stats",{admin:true}),
+      api("/api/projects?limit=100")]);
+    CACHE={agents:agents.items,tasks:tasks.items,events:events.items,stats,
+           projects:projects.items};
     rerenderPage();
   }catch(e){flash(e.message,1)}
 }
@@ -1261,6 +1458,77 @@ function pageAgents(){
            <button class="sm danger" onclick="delAgent('${esc(a.id)}')">delete</button></td>
      </tr>`}).join("")||'<tr><td colspan=7 class="empty">no agents registered</td></tr>'}
      </table>
+   </div>`);
+}
+
+function projStatusPill(s){const m={active:"s-claimed",paused:"s-cancelled",done:"s-done",cancelled:"s-cancelled"};return pill(m[s]||"s-queued",s)}
+function pageProjects(){
+  const P=CACHE.projects||[];
+  return shell("projects","Projects",`
+   <div class="card" style="margin-bottom:16px">
+     <h2>New project</h2>
+     <div class="row">
+       <input id="pjname" class="grow" placeholder="project name">
+       <input id="pjctx" class="grow" placeholder='context JSON e.g. {"repo":"~/Work/x"}'>
+       <button class="primary" onclick="createProject()">Create</button>
+     </div>
+   </div>
+   <div class="grid">
+     ${P.map(p=>{const t=p.tasks||{};const total=Object.values(t).reduce((a,b)=>a+b,0);
+        return `<div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:start">
+            <div><b style="font-size:15px">${esc(p.name)}</b><div class="ev mono">${esc(p.id)}</div></div>
+            ${projStatusPill(p.status)}
+          </div>
+          ${p.description?`<div class="ev" style="margin:8px 0">${esc(p.description)}</div>`:""}
+          <div class="stats" style="margin:10px 0">
+            <div><div class="stat" style="font-size:18px">${total}</div><div class="statlabel">tasks</div></div>
+            <div><div class="stat" style="font-size:18px">${(t.in_progress||0)+(t.claimed||0)}</div><div class="statlabel">active</div></div>
+            <div><div class="stat" style="font-size:18px">${(t.done||0)+(t.approved||0)}</div><div class="statlabel">done</div></div>
+            <div><div class="stat" style="font-size:18px">${(t.failed||0)+(t.rejected||0)}</div><div class="statlabel">failed</div></div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="sm primary" onclick="go('#/project/${esc(p.id)}')">open →</button>
+            <button class="sm" onclick="closeProject('${esc(p.id)}','done')">mark done</button>
+            <button class="sm danger" onclick="closeProject('${esc(p.id)}','cancelled')">cancel</button>
+          </div>
+        </div>`}).join("")||'<div class="card"><div class="empty">no projects yet</div></div>'}
+   </div>`);
+}
+async function pageProject(id){
+  let p;
+  try{p=await api("/api/projects/"+id)}catch(e){return shell("projects","Project not found",`<div class="card"><div class="empty">${esc(e.message)}</div><span class="backlink" onclick="go('#/projects')">← back to projects</span></div>`)}
+  const items=p.task_items||[];
+  return shell("projects",esc(p.name),`
+   <span class="backlink" onclick="go('#/projects')">← all projects</span>
+   <div class="grid">
+     <div class="card"><h2>Details</h2>
+       <dl class="kv">
+         <dt>id</dt><dd class="mono">${esc(p.id)}</dd>
+         <dt>status</dt><dd>${projStatusPill(p.status)}</dd>
+         <dt>owner</dt><dd class="mono">${esc(p.owner_agent||"—")}</dd>
+         <dt>created</dt><dd>${ago(p.created_at)}</dd>
+         <dt>updated</dt><dd>${ago(p.updated_at)}</dd>
+       </dl>
+       ${p.description?`<h2 style="margin-top:14px">Description</h2><div>${esc(p.description)}</div>`:""}
+       <h2 style="margin-top:14px">Context</h2><pre>${esc(JSON.stringify(p.context||{},null,1))}</pre>
+       <div style="margin-top:14px;display:flex;gap:8px">
+         <button class="sm" onclick="closeProject('${esc(p.id)}','done')">mark done</button>
+         <button class="sm" onclick="closeProject('${esc(p.id)}','paused')">pause</button>
+         <button class="sm danger" onclick="closeProject('${esc(p.id)}','cancelled')">cancel</button>
+       </div>
+     </div>
+     <div class="card"><h2>Tasks (${items.length})</h2>
+       <div class="row">
+         <input id="pttitle" class="grow" placeholder="new task title">
+         <select id="ptkind" style="width:auto">${KINDS.map(k=>`<option>${k}</option>`).join("")}</select>
+         <input id="ptprio" type="number" min="0" max="5" value="3" style="width:56px">
+         <button class="sm primary" onclick="addTaskToProject('${esc(p.id)}')">add</button>
+       </div>
+       <table><tr><th>title</th><th>status</th><th>assignee</th><th>prio</th></tr>
+       ${items.map(t=>`<tr class="clickable" onclick="go('#/task/${t.id}')"><td>${esc(t.title)}</td><td>${statusPill(t.status)}</td><td class="mono">${esc(t.assigned_to||"—")}</td><td>${t.priority}</td></tr>`).join("")||'<tr><td colspan=4 class="empty">no tasks</td></tr>'}
+       </table>
+     </div>
    </div>`);
 }
 
@@ -1407,6 +1675,8 @@ function route(refresh=true){
   if(refresh)loadAll();
   let m;
   if(h==="#/"||h===""){$("#app").innerHTML=pageDash()}
+  else if(h==="#/projects"){$("#app").innerHTML=pageProjects()}
+  else if(m=h.match(/^#\/project\/([^/]+)$/)){$("#app").innerHTML='<div class="empty">loading…</div>';pageProject(decodeURIComponent(m[1])).then(html=>{$("#app").innerHTML=html})}
   else if(h==="#/agents"){$("#app").innerHTML=pageAgents()}
   else if(h==="#/tasks"){$("#app").innerHTML=pageTasks()}
   else if(m=h.match(/^#\/task\/([^/]+)$/)){$("#app").innerHTML='<div class="empty">loading…</div>';pageTask(decodeURIComponent(m[1])).then(html=>{$("#app").innerHTML=html})}
@@ -1428,9 +1698,26 @@ async function regAgent(){
 }
 async function issueJoinKey(){
   try{const d=await api("/api/admin/join-key",{method:"POST",admin:true,body:{}});
-    window.prompt("JOIN KEY (hand to new agents; old one is now invalid):\n\n"+
-      "./install.sh <orchestrator-url> "+d.join_key, d.join_key);
+    window.prompt("JOIN KEY (hand to new agents; old one is now invalid)"+String.fromCharCode(10,10)+"./install.sh <orchestrator-url> "+d.join_key, d.join_key);
     flash("join key issued");}catch(e){flash(e.message,1)}
+}
+async function createProject(){
+  const name=$("#pjname").value.trim();if(!name)return flash("name required",1);
+  let ctx={};const raw=$("#pjctx").value.trim();
+  if(raw){try{ctx=JSON.parse(raw)}catch(e){return flash("context must be valid JSON",1)}}
+  try{await api("/api/projects",{method:"POST",body:{name,description:"",context:ctx}});
+    flash("project created");loadAll();}catch(e){flash(e.message,1)}
+}
+async function closeProject(id,status){
+  try{await api("/api/projects/"+id,{method:"PATCH",body:{status}});
+    flash("project "+status);loadAll();}catch(e){flash(e.message,1)}
+}
+async function addTaskToProject(pid){
+  const title=$("#pttitle").value.trim();if(!title)return flash("title required",1);
+  const kind=$("#ptkind").value,priority=parseInt($("#ptprio").value||"3",10);
+  try{await api("/api/tasks",{method:"POST",body:{title,kind,priority,project_id:pid,spec:{}}});
+    flash("task added");loadAll();
+    pageProject(pid).then(html=>{$("#app").innerHTML=html});}catch(e){flash(e.message,1)}
 }
 async function issueKey(id){try{const d=await api("/api/admin/keys",{method:"POST",admin:true,body:{agent_id:id}});window.prompt("New key (old revoked):",d.api_key);loadAll()}catch(e){flash(e.message,1)}}
 async function revokeKey(id){if(!confirm("Revoke key for "+id+"?"))return;try{await api("/api/admin/keys/"+id,{method:"DELETE",admin:true});flash("revoked");loadAll()}catch(e){flash(e.message,1)}}

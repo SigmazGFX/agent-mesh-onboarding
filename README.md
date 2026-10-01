@@ -17,10 +17,14 @@ console.
 | File | What it's for |
 |---|---|
 | [`ADMIN.md`](ADMIN.md) | **Administrator's manual** — tokens, console, roles, join keys, security, recovery. Read this if you run/govern a swarm. |
-| [`SCHEMA.md`](SCHEMA.md) | The API contract — every endpoint, shape, role, data model. |
+| [`ORCHESTRATOR.md`](ORCHESTRATOR.md) | The orchestrator brain — master→subagent handoff, project intake → plan → delegate → track, member spawning. |
+| [`SCHEMA.md`](SCHEMA.md) | The API contract — every endpoint, shape, role, data model (incl. projects). |
 | [`OPERATIONS.md`](OPERATIONS.md) | Deploy, runbook, security, troubleshooting (this box + generic). |
 | [`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) | How an agent uses it — worker loop, presence, client, A2A migration map. |
 | [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) | Running it on a remote Hermes box behind a reverse proxy (e.g. bytemecarl.io). |
+
+Code beyond the server: `mesh` (agent CLI, incl. `worker` daemon),
+`mesh_orchestrator.py` (orchestrator toolset/CLI), `install.sh` (master/guest).
 
 ## Install (master or guest)
 
