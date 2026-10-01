@@ -1545,8 +1545,88 @@ async function loadAll(){
       api("/api/projects?limit=100")]);
     CACHE={agents:agents.items,tasks:tasks.items,events:events.items,stats,
            projects:projects.items};
-    rerenderPage();
+    refreshData();   // update only the data regions — never touch form inputs
   }catch(e){flash(e.message,1)}
+}
+// Non-destructive auto-refresh: re-render just the #refresh region of the
+// current page (tables/lists/stats). Form fields live OUTSIDE #refresh, so
+// typed text survives the 5s poll. Falls back to a full route() if the page
+// has no refresh region (e.g. async detail pages still loading).
+function refreshData(){
+  const h=location.hash||"#/";let m;
+  const set=(id,html)=>{const el=$(id);if(el)el.innerHTML=html};
+  if(h==="#/"||h===""){
+    const S=CACHE.stats||{},T=CACHE.tasks||[],E=CACHE.events||[];
+    const active=(S.tasks_by_status?.in_progress||0)+(S.tasks_by_status?.claimed||0);
+    const done=(S.tasks_by_status?.done||0)+(S.tasks_by_status?.approved||0);
+    set("#dashstats",`
+     <div class="stats">
+       <div><div class="stat">${S.tasks_by_status?.queued||0}</div><div class="statlabel">queued</div></div>
+       <div><div class="stat">${active}</div><div class="statlabel">active</div></div>
+       <div><div class="stat">${done}</div><div class="statlabel">done/approved</div></div>
+       <div><div class="stat">${S.tasks_by_status?.failed||0}</div><div class="statlabel">failed</div></div>
+       <div><div class="stat">${S.agents_total||0}</div><div class="statlabel">agents (${esc(Object.entries(S.agents_by_role||{}).map(([r,n])=>`${r}:${n}`).join(" · ")||"—")})</div></div>
+     </div>`);
+    set("#recent",T.slice(0,6).map(t=>`<tr class="clickable" onclick="go('#/task/${t.id}')"><td>${esc(t.title)}</td><td>${statusPill(t.status)}</td><td class="mono">${esc(t.assigned_to||"—")}</td><td>${ago(t.updated_at)}</td></tr>`).join("")||'<tr><td colspan=4 class="empty">no tasks yet</td></tr>');
+    set("#evlive",E.slice(0,12).map(evLine).join("")||'<div class="empty">no events</div>');
+  }
+  else if(h==="#/projects"){
+    const P=CACHE.projects||[];
+    set("#projlist",P.map(p=>{const t=p.tasks||{};const total=Object.values(t).reduce((a,b)=>a+b,0);
+        return `<div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:start">
+            <div><b style="font-size:15px">${esc(p.name)}</b><div class="ev mono">${esc(p.id)}</div></div>
+            ${projStatusPill(p.status)}
+          </div>
+          ${p.description?`<div class="ev" style="margin:8px 0">${esc(p.description)}</div>`:""}
+          <div class="stats" style="margin:10px 0">
+            <div><div class="stat" style="font-size:18px">${total}</div><div class="statlabel">tasks</div></div>
+            <div><div class="stat" style="font-size:18px">${(t.in_progress||0)+(t.claimed||0)}</div><div class="statlabel">active</div></div>
+            <div><div class="stat" style="font-size:18px">${(t.done||0)+(t.approved||0)}</div><div class="statlabel">done</div></div>
+            <div><div class="stat" style="font-size:18px">${(t.failed||0)+(t.rejected||0)}</div><div class="statlabel">failed</div></div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="sm primary" onclick="go('#/project/${esc(p.id)}')">open →</button>
+            <button class="sm" onclick="closeProject('${esc(p.id)}','done')">mark done</button>
+            <button class="sm danger" onclick="closeProject('${esc(p.id)}','cancelled')">cancel</button>
+          </div>
+        </div>`}).join("")||'<div class="card"><div class="empty">no projects yet</div></div>');
+  }
+  else if(m=h.match(/^#\/project\/([^/]+)$/)){
+    const pid=decodeURIComponent(m[1]);
+    const p=(CACHE.projects||[]).find(x=>x.id===pid);
+    if(p&&$("#ptasktable")){
+      const items=p.task_items||CACHE.tasks.filter(t=>t.project_id===pid);
+      $("#ptasktable").innerHTML=`<tr><th>title</th><th>status</th><th>assignee</th><th>prio</th></tr>`+
+        (items.map(t=>`<tr class="clickable" onclick="go('#/task/${t.id}')"><td>${esc(t.title)}</td><td>${statusPill(t.status)}</td><td class="mono">${esc(t.assigned_to||"—")}</td><td>${t.priority}</td></tr>`).join("")||'<tr><td colspan=4 class="empty">no tasks</td></tr>');
+      const th=$("#ptaskcount");if(th)th.textContent=`Tasks (${items.length})`;
+    }
+  }
+  else if(h==="#/agents"){
+    const A=CACHE.agents||[];
+    set("#agentrows",A.map(a=>{const hasAdmin=(a.caps||[]).includes("admin");return `<tr>
+       <td>${esc(a.name)}<div class="ev mono">${esc(a.id)}</div></td>
+       <td><select onchange="setRole('${esc(a.id)}',this.value)" style="width:auto">${roleOpts(a.role)}</select></td>
+       <td>${agentPill(a.status)}</td><td>${ago(a.last_seen)}</td>
+       <td class="mono key">${esc(a.key_prefix||"—")}${a.has_key?"":" ⚠ no-key"}</td>
+       <td><button class="sm ${hasAdmin?'primary':''}" onclick="toggleAdminCap('${esc(a.id)}',${!hasAdmin})">${hasAdmin?'admin ✓':'grant'}</button></td>
+       <td style="white-space:nowrap"><button class="sm" onclick="issueKey('${esc(a.id)}')">rekey</button>
+           <button class="sm danger" onclick="revokeKey('${esc(a.id)}')">revoke</button>
+           <button class="sm danger" onclick="delAgent('${esc(a.id)}')">delete</button></td>
+     </tr>`}).join("")||'<tr><td colspan=7 class="empty">no agents registered</td></tr>');
+  }
+  else if(h==="#/tasks"){
+    renderTaskFilter();  // updates #tasktable rows + #tcount, keeps filter select
+  }
+  else if(m=h.match(/^#\/task\/([^/]+)$/)){
+    const tid=decodeURIComponent(m[1]);
+    const evs=(CACHE.events||[]).filter(e=>e.task_id===tid);
+    set("#taskevents",evs.map(evLine).join("")||'<div class="empty">no events for this task</div>');
+  }
+  else if(h==="#/events"){
+    reloadEvents();
+  }
+  // artifacts page pulls its own data on demand; nothing to refresh here.
 }
 function rerenderPage(){route(false)}
 
@@ -1558,22 +1638,22 @@ function pageDash(){
   const done=(S.tasks_by_status?.done||0)+(S.tasks_by_status?.approved||0);
   const recent=T.slice(0,6);
   return shell("dash","Dashboard",`
-   <div class="stats">
-     <div><div class="stat">${S.tasks_by_status?.queued||0}</div><div class="statlabel">queued</div></div>
-     <div><div class="stat">${active}</div><div class="statlabel">active</div></div>
-     <div><div class="stat">${done}</div><div class="statlabel">done/approved</div></div>
-     <div><div class="stat">${S.tasks_by_status?.failed||0}</div><div class="statlabel">failed</div></div>
-     <div><div class="stat">${S.agents_total||0}</div><div class="statlabel">agents (${esc(roleCounts)})</div></div>
+   <div id="dashstats" class="stats">
+    <div><div class="stat">${S.tasks_by_status?.queued||0}</div><div class="statlabel">queued</div></div>
+    <div><div class="stat">${active}</div><div class="statlabel">active</div></div>
+    <div><div class="stat">${done}</div><div class="statlabel">done/approved</div></div>
+    <div><div class="stat">${S.tasks_by_status?.failed||0}</div><div class="statlabel">failed</div></div>
+    <div><div class="stat">${S.agents_total||0}</div><div class="statlabel">agents (${esc(roleCounts)})</div></div>
    </div>
    <div class="grid">
      <div class="card"><h2>Recent tasks</h2>
        <table><tr><th>title</th><th>status</th><th>assignee</th><th>updated</th></tr>
-       ${recent.map(t=>`<tr class="clickable" onclick="go('#/task/${t.id}')"><td>${esc(t.title)}</td><td>${statusPill(t.status)}</td><td class="mono">${esc(t.assigned_to||"—")}</td><td>${ago(t.updated_at)}</td></tr>`).join("")||'<tr><td colspan=4 class="empty">no tasks yet</td></tr>'}
+       <tbody id="recent">${recent.map(t=>`<tr class="clickable" onclick="go('#/task/${t.id}')"><td>${esc(t.title)}</td><td>${statusPill(t.status)}</td><td class="mono">${esc(t.assigned_to||"—")}</td><td>${ago(t.updated_at)}</td></tr>`).join("")||'<tr><td colspan=4 class="empty">no tasks yet</td></tr>'}</tbody>
        </table>
        <div style="margin-top:10px"><button class="sm" onclick="go('#/tasks')">all tasks →</button></div>
      </div>
      <div class="card"><h2>Live events</h2>
-       ${E.slice(0,12).map(evLine).join("")||'<div class="empty">no events</div>'}
+       <div id="evlive">${E.slice(0,12).map(evLine).join("")||'<div class="empty">no events</div>'}</div>
        <div style="margin-top:10px"><button class="sm" onclick="go('#/events')">full log →</button></div>
      </div>
    </div>`);
@@ -1599,7 +1679,7 @@ function pageAgents(){
        <button class="primary" onclick="regAgent()">Register</button>
      </div>
      <table><tr><th>name</th><th>role</th><th>status</th><th>seen</th><th>key</th><th>console</th><th>actions</th></tr>
-     ${A.map(a=>{const hasAdmin=(a.caps||[]).includes("admin");return `<tr>
+     <tbody id="agentrows">${A.map(a=>{const hasAdmin=(a.caps||[]).includes("admin");return `<tr>
        <td>${esc(a.name)}<div class="ev mono">${esc(a.id)}</div></td>
        <td><select onchange="setRole('${esc(a.id)}',this.value)" style="width:auto">${roleOpts(a.role)}</select></td>
        <td>${agentPill(a.status)}</td><td>${ago(a.last_seen)}</td>
@@ -1608,7 +1688,7 @@ function pageAgents(){
        <td style="white-space:nowrap"><button class="sm" onclick="issueKey('${esc(a.id)}')">rekey</button>
            <button class="sm danger" onclick="revokeKey('${esc(a.id)}')">revoke</button>
            <button class="sm danger" onclick="delAgent('${esc(a.id)}')">delete</button></td>
-     </tr>`}).join("")||'<tr><td colspan=7 class="empty">no agents registered</td></tr>'}
+     </tr>`}).join("")||'<tr><td colspan=7 class="empty">no agents registered</td></tr>'}</tbody>
      </table>
    </div>`);
 }
@@ -1625,7 +1705,7 @@ function pageProjects(){
        <button class="primary" onclick="createProject()">Create</button>
      </div>
    </div>
-   <div class="grid">
+   <div class="grid" id="projlist">
      ${P.map(p=>{const t=p.tasks||{};const total=Object.values(t).reduce((a,b)=>a+b,0);
         return `<div class="card">
           <div style="display:flex;justify-content:space-between;align-items:start">
@@ -1670,14 +1750,14 @@ async function pageProject(id){
          <button class="sm danger" onclick="closeProject('${esc(p.id)}','cancelled')">cancel</button>
        </div>
      </div>
-     <div class="card"><h2>Tasks (${items.length})</h2>
+     <div class="card"><h2 id="ptaskcount">Tasks (${items.length})</h2>
        <div class="row">
          <input id="pttitle" class="grow" placeholder="new task title">
          <select id="ptkind" style="width:auto">${KINDS.map(k=>`<option>${k}</option>`).join("")}</select>
          <input id="ptprio" type="number" min="0" max="5" value="3" style="width:56px">
          <button class="sm primary" onclick="addTaskToProject('${esc(p.id)}')">add</button>
        </div>
-       <table><tr><th>title</th><th>status</th><th>assignee</th><th>prio</th></tr>
+       <table id="ptasktable"><tr><th>title</th><th>status</th><th>assignee</th><th>prio</th></tr>
        ${items.map(t=>`<tr class="clickable" onclick="go('#/task/${t.id}')"><td>${esc(t.title)}</td><td>${statusPill(t.status)}</td><td class="mono">${esc(t.assigned_to||"—")}</td><td>${t.priority}</td></tr>`).join("")||'<tr><td colspan=4 class="empty">no tasks</td></tr>'}
        </table>
      </div>
@@ -1769,7 +1849,7 @@ async function pageTask(id){
          ${arts.map(aid=>artRow(aid)).join("")}</table>`:'<div class="empty">none uploaded</div>'}
      </div>
      <div class="card"><h2>Task events</h2>
-       ${evs.map(evLine).join("")||'<div class="empty">no events for this task</div>'}
+       <div id="taskevents">${evs.map(evLine).join("")||'<div class="empty">no events for this task</div>'}</div>
      </div>
    </div>`);
 }
