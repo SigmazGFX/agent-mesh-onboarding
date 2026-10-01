@@ -14,11 +14,23 @@ Usage:
   mesh upload <task_id> <path>
   mesh tasks [--status S]     # list tasks
   mesh events [--task-id T]   # recent events
+  mesh peers                  # who's in the swarm + presence
+  mesh worker                 # run the poll/execute/report loop (daemon)
+
+Worker loop:
+  mesh worker [--poll 30] [--heartbeat 60] [--once] [--dry-run]
+    --poll N       seconds between pulls when idle (default 30)
+    --heartbeat N  seconds between presence heartbeats (default 60; keep < 90)
+    --once         single tick then exit (for cron/timer use)
+    --dry-run      pull+report but don't execute (prints the task spec)
 """
 import argparse
 import json
 import os
+import signal
+import subprocess
 import sys
+import time
 import urllib.request
 import urllib.error
 
@@ -32,7 +44,7 @@ def load_cfg():
         return json.load(f)
 
 
-def call(cfg, method, path, body=None):
+def call(cfg, method, path, body=None, _exit=True):
     url = cfg["base_url"].rstrip("/") + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -47,7 +59,14 @@ def call(cfg, method, path, body=None):
             d = json.loads(e.read().decode())
         except Exception:
             d = {"detail": str(e)}
-        sys.exit("%s %s -> HTTP %s: %s" % (method, path, e.code, d.get("detail", d)))
+        msg = "%s %s -> HTTP %s: %s" % (method, path, e.code, d.get("detail", d))
+        if _exit:
+            sys.exit(msg)
+        raise RuntimeError(msg)
+    except Exception as e:  # network errors etc.
+        if _exit:
+            sys.exit("%s %s -> %s" % (method, path, e))
+        raise
 
 
 def main():
@@ -66,6 +85,12 @@ def main():
     p = sub.add_parser("upload"); p.add_argument("task_id"); p.add_argument("path")
     p = sub.add_parser("tasks"); p.add_argument("--status")
     p = sub.add_parser("events"); p.add_argument("--task-id")
+    sub.add_parser("peers")
+    p = sub.add_parser("worker", help="run the poll/execute/report loop")
+    p.add_argument("--poll", type=float, default=30, help="idle seconds between pulls")
+    p.add_argument("--heartbeat", type=float, default=60, help="seconds between presence heartbeats (<90)")
+    p.add_argument("--once", action="store_true", help="single tick then exit (cron use)")
+    p.add_argument("--dry-run", action="store_true", help="pull+report but don't execute")
     args = ap.parse_args()
     cfg = load_cfg()
 
@@ -119,6 +144,111 @@ def main():
     elif args.cmd == "events":
         q = f"?task_id={args.task_id}" if args.task_id else ""
         print(json.dumps(call(cfg, "GET", "/api/events" + q), indent=2))
+    elif args.cmd == "peers":
+        d = call(cfg, "GET", "/api/agents")
+        me = cfg["agent_id"]
+        for a in d["items"]:
+            mark = " (you)" if a["id"] == me else ""
+            print(f'{a["status"]:9}  {a["role"]:13}  {a["name"]}{mark}  '
+                  f'[{a["id"]}]')
+    elif args.cmd == "worker":
+        run_worker(cfg, poll=args.poll, heartbeat=args.heartbeat,
+                   once=args.once, dry_run=args.dry_run)
+
+
+def execute_task(cfg, task):
+    """Execute a claimed task. Default: run spec.command if present, else no-op.
+    Returns (status, output_dict). Override by editing this function or by
+    pointing MESH_WORKER_CMD at your own executor script (argv: <task_json>)."""
+    spec = task.get("spec") or {}
+    cmd = spec.get("command")
+    custom = os.environ.get("MESH_WORKER_CMD")
+    if custom:
+        # external executor: pass the full task JSON on stdin; exit 0 => ok
+        r = subprocess.run([custom], input=json.dumps(task).encode(),
+                           capture_output=True, timeout=3600)
+        out = {"stdout": r.stdout.decode(errors="replace")[-4000:],
+               "stderr": r.stderr.decode(errors="replace")[-4000:],
+               "exit_code": r.returncode}
+        return ("ok" if r.returncode == 0 else "failed"), out
+    if cmd:
+        r = subprocess.run(cmd, shell=True, capture_output=True, timeout=3600)
+        out = {"stdout": r.stdout.decode(errors="replace")[-4000:],
+               "stderr": r.stderr.decode(errors="replace")[-4000:],
+               "exit_code": r.returncode}
+        return ("ok" if r.returncode == 0 else "failed"), out
+    # no command given — nothing to do
+    return "ok", {"note": "no spec.command; treated as no-op"}
+
+
+def run_worker(cfg, poll=30.0, heartbeat=60.0, once=False, dry_run=False):
+    stop = {"flag": False}
+
+    def _sig(_n, _f):
+        stop["flag"] = True
+    signal.signal(signal.SIGTERM, _sig)
+    signal.signal(signal.SIGINT, _sig)
+
+    me = call(cfg, "GET", "/api/agents/me", _exit=False)
+    print(f"[mesh worker] {me['name']} role={me['role']} "
+          f"poll={poll}s heartbeat={heartbeat}s dry_run={dry_run}", flush=True)
+    if me["role"] == "observer":
+        print("[mesh worker] WARNING: role is 'observer' — cannot pull work. "
+              "Ask the admin to assign a worker+ role.", flush=True)
+
+    last_hb = 0.0
+    while not stop["flag"]:
+        now = time.time()
+        try:
+            # presence heartbeat (keep < 90s so we stay 'online')
+            if now - last_hb >= heartbeat:
+                call(cfg, "POST", "/api/agents/checkin", {}, _exit=False)
+                last_hb = now
+            # try to claim a task
+            d = call(cfg, "GET", "/api/work/pull", _exit=False)
+            task = d.get("task")
+            if not task:
+                if once:
+                    print("[mesh worker] no task; exiting (--once)", flush=True)
+                    break
+                _sleep(poll, stop)
+                continue
+            tid = task["id"]
+            print(f"[mesh worker] claimed {tid}: {task['title']!r}", flush=True)
+            try:
+                call(cfg, "POST", f"/api/tasks/{tid}/start", {}, _exit=False)
+                call(cfg, "POST", f"/api/tasks/{tid}/progress",
+                     {"pct": 5, "note": "started"}, _exit=False)
+                if dry_run:
+                    status, output = "ok", {"dry_run": True,
+                                             "spec": task.get("spec")}
+                else:
+                    status, output = execute_task(cfg, task)
+                call(cfg, "POST", f"/api/tasks/{tid}/result",
+                     {"status": status, "output": output}, _exit=False)
+                print(f"[mesh worker] {tid} -> {status}", flush=True)
+            except Exception as e:
+                try:
+                    call(cfg, "POST", f"/api/tasks/{tid}/result",
+                         {"status": "failed", "error": str(e)}, _exit=False)
+                except Exception:
+                    pass
+                print(f"[mesh worker] {tid} FAILED: {e}", flush=True)
+            if once:
+                break
+        except Exception as e:
+            # orchestrator unreachable etc. — back off and retry
+            print(f"[mesh worker] error: {e}; retrying in {poll}s", flush=True)
+            if once:
+                break
+            _sleep(poll, stop)
+    print("[mesh worker] stopped", flush=True)
+
+
+def _sleep(seconds, stop):
+    end = time.time() + seconds
+    while not stop["flag"] and time.time() < end:
+        time.sleep(min(0.5, max(0.0, end - time.time())))
 
 
 if __name__ == "__main__":

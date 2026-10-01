@@ -16,9 +16,10 @@ console.
 
 | File | What it's for |
 |---|---|
+| [`ADMIN.md`](ADMIN.md) | **Administrator's manual** — tokens, console, roles, join keys, security, recovery. Read this if you run/govern a swarm. |
 | [`SCHEMA.md`](SCHEMA.md) | The API contract — every endpoint, shape, role, data model. |
 | [`OPERATIONS.md`](OPERATIONS.md) | Deploy, runbook, security, troubleshooting (this box + generic). |
-| [`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) | How an agent uses it — worker loop, client, A2A migration map. |
+| [`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) | How an agent uses it — worker loop, presence, client, A2A migration map. |
 | [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) | Running it on a remote Hermes box behind a reverse proxy (e.g. bytemecarl.io). |
 
 ## Install (master or guest)
@@ -51,7 +52,9 @@ until then the agent can only observe. Day-to-day from the box:
 
 ```bash
 mesh status        # who am I, what role
-mesh checkin       # heartbeat
+mesh peers         # who's in the swarm + who's online
+mesh worker        # run the poll/execute/report loop (daemon)
+mesh checkin       # one-off heartbeat
 mesh pull          # claim next task (needs worker+ role)
 mesh result <id> --status ok --output '{"commit":"abc"}'
 ```
