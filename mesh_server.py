@@ -624,6 +624,7 @@ class Handler(BaseHTTPRequestHandler):
         ("GET",    r"^/api/messages$",                         "ep_inbox"),
         ("POST",   r"^/api/messages$",                         "ep_send_msg"),
         ("POST",   r"^/api/messages/(?P<id>[^/]+)/read$",      "ep_mark_read"),
+        ("GET",    r"^/api/messages/stream$",                  "ep_messages_stream"),
         ("GET",    r"^/api/admin/stats$",                      "ep_admin_stats"),
         ("GET",    r"^/$",                                     "ep_ui"),
     ]
@@ -1254,7 +1255,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- A2A messaging (over the mesh)
     def _msg_pub(self, row):
-        return {"id": row["id"], "from": row["from_agent"], "to": row["to_agent"],
+        # rowid is aliased as 'mid' by the stream query (it's a SQLite
+        # pseudo-column not returned by SELECT *); fall back gracefully.
+        return {"id": row["id"], "rowid": row["mid"] if "mid" in row.keys() else None,
+                "from": row["from_agent"], "to": row["to_agent"],
                 "type": row["type"], "payload": json.loads(row["payload"] or "{}"),
                 "correlation_id": row["correlation_id"], "status": row["status"],
                 "reply_to": row["reply_to"], "ts": row["ts"]}
@@ -1305,6 +1309,58 @@ class Handler(BaseHTTPRequestHandler):
             raise PermissionError("not your message")
         self.store.mark_read(g["id"])
         self._send_json({"ok": True, "id": g["id"]})
+
+    def ep_messages_stream(self, g):
+        # Long-poll: hold the connection until a NEW message arrives for this
+        # agent (or timeout). This is what turns pull-based A2A into near-push:
+        # an agent opens ONE stream and stays connected; a message lands within
+        # ~1s of being sent instead of waiting for the next inbox poll.
+        # Reverse-proxy friendly: bounded wait (default 25s < typical 30s proxy
+        # idle timeout), so no SSE/websocket needed. The client just re-issues
+        # with last_id to resume where it left off.
+        caller = self._auth()
+        q = parse_qs(urlparse(self.path).query)
+        try:
+            last_id = int((q.get("last_id") or ["0"])[0])
+        except ValueError:
+            raise ValueError("last_id must be an integer rowid")
+        timeout = min(float((q.get("timeout") or ["25"])[0]), 55)
+        limit = min(int((q.get("limit") or ["50"])[0]), 200)
+
+        # Newer rows than last_id (messages.rowid is INTEGER AUTOINCREMENT, so
+        # numeric comparison gives strict recency ordering). rowid is a SQLite
+        # pseudo-column not exposed by SELECT *, so alias it explicitly.
+        rows = self.store.q("SELECT *, rowid AS mid FROM messages "
+                            "WHERE to_agent=? AND rowid>? ORDER BY rowid ASC LIMIT ?",
+                            (caller["id"], last_id, limit))
+        if rows:
+            return self._send_json({
+                "items": [self._msg_pub(r) for r in rows],
+                "last_id": max(r["mid"] for r in rows),
+                "unread": self.store.count_unread(caller["id"]),
+                "timed_out": False,
+            })
+
+        # Nothing new yet — hold up to `timeout` seconds for one arrival.
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(remaining, 0.4))
+            rows = self.store.q("SELECT *, rowid AS mid FROM messages "
+                                "WHERE to_agent=? AND rowid>? ORDER BY rowid ASC LIMIT ?",
+                                (caller["id"], last_id, limit))
+            if rows:
+                return self._send_json({
+                    "items": [self._msg_pub(r) for r in rows],
+                    "last_id": max(r["mid"] for r in rows),
+                    "unread": self.store.count_unread(caller["id"]),
+                    "timed_out": False,
+                })
+        self._send_json({"items": [], "last_id": last_id,
+                         "unread": self.store.count_unread(caller["id"]),
+                         "timed_out": True})
 
     # ---- web UI
     def ep_ui(self, g):
@@ -1952,6 +2008,16 @@ class MeshClient:
 
     def mark_read(self, msg_id):
         return self._req("POST", f"/api/messages/{msg_id}/read")
+
+    def stream(self, last_id=0, timeout=25, limit=50):
+        # Long-poll: blocks until a new message arrives or `timeout` seconds.
+        import urllib.request
+        url = (self.base + f"/api/messages/stream?last_id={last_id}"
+               f"&timeout={timeout}&limit={limit}")
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Authorization", "Bearer " + self.key)
+        with urllib.request.urlopen(req, timeout=self.timeout + 10) as r:
+            return json.loads(r.read().decode())
 
     def upload(self, task_id, path, name=None):
         import urllib.request

@@ -190,6 +190,7 @@ coordination and chatter. Pull-based: the recipient reads its inbox.
 | POST | `/api/messages` | agent | Send. Body: `{to, type?, payload?, correlation_id?, reply_to?}`. `type`: `note` (default), `task.dispatch`, `task.result`, `ping`, or any custom string. `payload` is a free JSON object (convention: `{"text": "..."}`). Returns `{ok, id, delivered}`. |
 | GET | `/api/messages` | agent | Read own inbox (newest first). `?limit=` (max 200); header `X-Read: unread` → only unread. Returns `{items:[…], unread:N}`. |
 | POST | `/api/messages/{id}/read` | owner/admin | Mark a message read (only the recipient or admin). |
+| GET | `/api/messages/stream` | agent | **Long-poll** for near-push delivery. `?last_id=` (integer rowid cursor, default 0), `?timeout=` seconds to hold (default 25, max 55), `?limit=`. Returns immediately if new messages exist; otherwise holds up to `timeout` and returns `{items:[], timed_out:true}`. Response includes `last_id` (the new cursor) — re-issue with it to resume. Reverse-proxy friendly (bounded wait < typical 30s idle timeout); no SSE/websocket needed. |
 
 Message shape:
 ```json
@@ -198,8 +199,9 @@ Message shape:
  "correlation_id":null,"status":"unread","reply_to":null,"ts":1759315200.0}
 ```
 `status`: `unread → read`. Replies set `correlation_id`/`reply_to` to the
-original `id` so conversations thread. CLI: `mesh msg <agent> "text"` and
-`mesh inbox [--unread] [--mark-read]`.
+original `id` so conversations thread. CLI: `mesh msg <agent> "text"`,
+`mesh inbox [--unread] [--mark-read]`, and **`mesh listen`** (long-poll loop —
+prints each incoming message as it lands, ~1s latency; `--mark-read` auto-acks).
 
 ### Artifacts
 | Method | Path | Auth | Description |

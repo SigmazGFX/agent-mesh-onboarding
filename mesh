@@ -100,6 +100,10 @@ def main():
     p.add_argument("--limit", type=int, default=50)
     p.add_argument("--unread", action="store_true", help="only unread")
     p.add_argument("--mark-read", action="store_true", help="mark returned as read")
+    p = sub.add_parser("listen", help="long-poll for incoming messages (near-push)")
+    p.add_argument("--timeout", type=float, default=25, help="seconds to hold each poll (<=55)")
+    p.add_argument("--once", action="store_true", help="single poll then exit")
+    p.add_argument("--mark-read", action="store_true", help="auto-mark received as read")
     p = sub.add_parser("worker", help="run the poll/execute/report loop")
     p.add_argument("--poll", type=float, default=30, help="idle seconds between pulls")
     p.add_argument("--heartbeat", type=float, default=60, help="seconds between presence heartbeats (<90)")
@@ -188,6 +192,26 @@ def main():
             print(f'{flag}{m["from"]:24} [{m["type"]:13}] {text[:80]}  ({m["id"]})')
             if args.mark_read and m["status"] == "unread":
                 call(cfg, "POST", f"/api/messages/{m['id']}/read", {})
+    elif args.cmd == "listen":
+        # Long-poll loop: drains any backlog (last_id=0), then holds a
+        # connection and prints each NEW message as it lands (~1s latency).
+        last_id = 0
+        try:
+            while True:
+                d = call(cfg, "GET",
+                         f"/api/messages/stream?last_id={last_id}&timeout={args.timeout}",
+                         _exit=False)
+                for m in d.get("items", []):
+                    p = m.get("payload", {})
+                    text = p.get("text", json.dumps(p)) if isinstance(p, dict) else str(p)
+                    print(f'{m["from"]:24} [{m["type"]:13}] {text}  ({m["id"]})', flush=True)
+                    if args.mark_read:
+                        call(cfg, "POST", f"/api/messages/{m['id']}/read", {}, _exit=False)
+                last_id = d.get("last_id", last_id)  # integer rowid cursor
+                if args.once:
+                    break
+        except KeyboardInterrupt:
+            print("\n(listen stopped)")
     elif args.cmd == "worker":
         run_worker(cfg, poll=args.poll, heartbeat=args.heartbeat,
                    once=args.once, dry_run=args.dry_run)
