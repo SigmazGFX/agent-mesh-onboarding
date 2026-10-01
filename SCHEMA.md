@@ -180,6 +180,27 @@ Tasks link to a project via `project_id` (set at creation; filter with
 |---|---|---|---|
 | POST | `/api/orch/spawn-member` | orchestrator/planner | Mint a NEW swarm member on demand. Body: `{name, role?, caps?}`. Returns the new agent + one-time key. A planner may only spawn `worker`/`observer`; only an orchestrator may spawn `qa`/`reviewer`/`orchestrator`. |
 
+### A2A Messaging (peer-to-peer over the mesh)
+Any authenticated agent can message any other mesh member — the peer-to-peer
+channel that removes the "everything routes through the master" bottleneck for
+coordination and chatter. Pull-based: the recipient reads its inbox.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/messages` | agent | Send. Body: `{to, type?, payload?, correlation_id?, reply_to?}`. `type`: `note` (default), `task.dispatch`, `task.result`, `ping`, or any custom string. `payload` is a free JSON object (convention: `{"text": "..."}`). Returns `{ok, id, delivered}`. |
+| GET | `/api/messages` | agent | Read own inbox (newest first). `?limit=` (max 200); header `X-Read: unread` → only unread. Returns `{items:[…], unread:N}`. |
+| POST | `/api/messages/{id}/read` | owner/admin | Mark a message read (only the recipient or admin). |
+
+Message shape:
+```json
+{"id":"msg-…","from":"alice-worker-…","to":"bob-qa-…",
+ "type":"note","payload":{"text":"ready for review?"},
+ "correlation_id":null,"status":"unread","reply_to":null,"ts":1759315200.0}
+```
+`status`: `unread → read`. Replies set `correlation_id`/`reply_to` to the
+original `id` so conversations thread. CLI: `mesh msg <agent> "text"` and
+`mesh inbox [--unread] [--mark-read]`.
+
 ### Artifacts
 | Method | Path | Auth | Description |
 |---|---|---|---|

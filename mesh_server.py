@@ -130,6 +130,19 @@ class Store:
             uploaded_by TEXT,
             ts REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS messages(
+            id TEXT PRIMARY KEY,
+            from_agent TEXT NOT NULL,
+            to_agent TEXT NOT NULL,
+            type TEXT NOT NULL DEFAULT 'note',
+            payload TEXT NOT NULL DEFAULT '{}',
+            correlation_id TEXT,
+            status TEXT NOT NULL DEFAULT 'unread',
+            reply_to TEXT,
+            ts REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_agent);
+        CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(from_agent);
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
         """)
         # Migration: add project_id to tasks for DBs created before projects.
@@ -193,6 +206,32 @@ class Store:
 
     def touch_agent(self, aid):
         self.ex("UPDATE agents SET last_seen=? WHERE id=?", (now(), aid))
+
+    # -- A2A messages
+    def add_message(self, mid, from_agent, to_agent, mtype, payload,
+                    correlation_id=None, status="unread", reply_to=None):
+        self.ex("INSERT INTO messages(id,from_agent,to_agent,type,payload,"
+                "correlation_id,status,reply_to,ts) VALUES(?,?,?,?,?,?,?,?,?)",
+                (mid, from_agent, to_agent, mtype, json.dumps(payload),
+                 correlation_id, status, reply_to, now()))
+
+    def get_message(self, mid):
+        return self.q1("SELECT * FROM messages WHERE id=?", (mid,))
+
+    def inbox(self, agent_id, limit=50, unread_only=False):
+        sql = ("SELECT * FROM messages WHERE to_agent=? "
+               + ("AND status='unread' " if unread_only else "")
+               + "ORDER BY ts DESC LIMIT ?")
+        return self.q(sql, (agent_id, limit))
+
+    def mark_read(self, mid):
+        self.ex("UPDATE messages SET status='read' WHERE id=? AND status='unread'",
+                (mid,))
+
+    def count_unread(self, agent_id):
+        r = self.q1("SELECT COUNT(*) n FROM messages WHERE to_agent=? "
+                    "AND status='unread'", (agent_id,))
+        return r["n"] if r else 0
 
     def update_agent(self, aid, **fields):
         allowed = {"name", "role", "caps", "status", "key_hash"}
@@ -582,6 +621,9 @@ class Handler(BaseHTTPRequestHandler):
         ("PATCH",  r"^/api/admin/agents/(?P<id>[^/]+)$",       "ep_admin_patch"),
         ("POST",   r"^/api/admin/join-key$",                   "ep_admin_joinkey"),
         ("POST",   r"^/api/orch/spawn-member$",                "ep_spawn_member"),
+        ("GET",    r"^/api/messages$",                         "ep_inbox"),
+        ("POST",   r"^/api/messages$",                         "ep_send_msg"),
+        ("POST",   r"^/api/messages/(?P<id>[^/]+)/read$",      "ep_mark_read"),
         ("GET",    r"^/api/admin/stats$",                      "ep_admin_stats"),
         ("GET",    r"^/$",                                     "ep_ui"),
     ]
@@ -1210,6 +1252,60 @@ class Handler(BaseHTTPRequestHandler):
                          "api_key": key,
                          "note": "spawned member; key shown only once"}, 201)
 
+    # ---- A2A messaging (over the mesh)
+    def _msg_pub(self, row):
+        return {"id": row["id"], "from": row["from_agent"], "to": row["to_agent"],
+                "type": row["type"], "payload": json.loads(row["payload"] or "{}"),
+                "correlation_id": row["correlation_id"], "status": row["status"],
+                "reply_to": row["reply_to"], "ts": row["ts"]}
+
+    def ep_send_msg(self, g):
+        # Any authenticated agent can message any other mesh member. This is the
+        # peer-to-peer channel that was missing: agents no longer have to route
+        # everything through the master for non-task chatter / coordination.
+        caller = self._auth()
+        body = self._json_body()
+        to = (body.get("to") or "").strip()
+        if not to:
+            raise ValueError("to required")
+        target = self.store.get_agent(to)
+        if not target:
+            raise KeyError(f"no such agent: {to}")
+        mtype = body.get("type") or "note"
+        payload = body.get("payload") or {}
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        mid = f"msg-{uuid.uuid4().hex}"
+        self.store.add_message(mid, caller["id"], to, mtype, payload,
+                               correlation_id=body.get("correlation_id"),
+                               reply_to=body.get("reply_to"))
+        self.store.add_event(caller["id"], "a2a.sent", None,
+                             {"to": to, "type": mtype, "msg": mid})
+        self._send_json({"ok": True, "id": mid, "delivered": True}, 201)
+
+    def ep_inbox(self, g):
+        caller = self._auth()
+        unread_only = self.headers.get("X-Read", "") == "unread"
+        q = parse_qs(urlparse(self.path).query)
+        limit = min(int((q.get("limit") or ["50"])[0]), 200)
+        rows = self.store.inbox(caller["id"], limit=limit,
+                                unread_only=unread_only)
+        self._send_json({
+            "items": [self._msg_pub(r) for r in rows],
+            "unread": self.store.count_unread(caller["id"]),
+        })
+
+    def ep_mark_read(self, g):
+        caller = self._auth()
+        row = self.store.get_message(g["id"])
+        if not row:
+            raise KeyError("no such message")
+        if row["to_agent"] != caller["id"] and not self.mesh.auth_is_admin(
+                self.headers.get("Authorization", "")):
+            raise PermissionError("not your message")
+        self.store.mark_read(g["id"])
+        self._send_json({"ok": True, "id": g["id"]})
+
     # ---- web UI
     def ep_ui(self, g):
         base = getattr(Handler, "base_path", "") or ""
@@ -1832,6 +1928,30 @@ class MeshClient:
     def report(self, task_id, status, output=None, error=None):
         return self._req("POST", f"/api/tasks/{task_id}/result",
                          {"status": status, "output": output, "error": error})
+
+    # -- A2A messaging (over the mesh)
+    def send_msg(self, to, text=None, mtype="note", payload=None,
+                 correlation_id=None, reply_to=None):
+        body = {"to": to, "type": mtype,
+                "payload": payload if payload is not None else {"text": text or ""}}
+        if correlation_id:
+            body["correlation_id"] = correlation_id
+        if reply_to:
+            body["reply_to"] = reply_to
+        return self._req("POST", "/api/messages", body)
+
+    def inbox(self, limit=50, unread_only=False):
+        import urllib.request
+        url = self.base + f"/api/messages?limit={limit}"
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Authorization", "Bearer " + self.key)
+        if unread_only:
+            req.add_header("X-Read", "unread")
+        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            return json.loads(r.read().decode())
+
+    def mark_read(self, msg_id):
+        return self._req("POST", f"/api/messages/{msg_id}/read")
 
     def upload(self, task_id, path, name=None):
         import urllib.request

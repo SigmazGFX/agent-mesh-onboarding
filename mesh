@@ -44,11 +44,14 @@ def load_cfg():
         return json.load(f)
 
 
-def call(cfg, method, path, body=None, _exit=True):
+def call(cfg, method, path, body=None, _exit=True, extra_headers=None):
     url = cfg["base_url"].rstrip("/") + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", "Bearer " + cfg["api_key"])
+    if extra_headers:
+        for k, v in extra_headers.items():
+            req.add_header(k, v)
     if data:
         req.add_header("Content-Type", "application/json")
     try:
@@ -85,7 +88,18 @@ def main():
     p = sub.add_parser("upload"); p.add_argument("task_id"); p.add_argument("path")
     p = sub.add_parser("tasks"); p.add_argument("--status")
     p = sub.add_parser("events"); p.add_argument("--task-id")
-    sub.add_parser("peers")
+    p = sub.add_parser("peers")
+    p = sub.add_parser("msg", help="send an A2A message to another agent")
+    p.add_argument("to", help="target agent id or name")
+    p.add_argument("text", nargs="?", help="message text")
+    p.add_argument("--type", default="note",
+                   help="note|task.dispatch|task.result|ping (default note)")
+    p.add_argument("--payload", help="raw JSON payload (overrides --text)")
+    p.add_argument("--correlation-id"); p.add_argument("--reply-to")
+    p = sub.add_parser("inbox", help="read your A2A inbox (over the mesh)")
+    p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--unread", action="store_true", help="only unread")
+    p.add_argument("--mark-read", action="store_true", help="mark returned as read")
     p = sub.add_parser("worker", help="run the poll/execute/report loop")
     p.add_argument("--poll", type=float, default=30, help="idle seconds between pulls")
     p.add_argument("--heartbeat", type=float, default=60, help="seconds between presence heartbeats (<90)")
@@ -151,6 +165,29 @@ def main():
             mark = " (you)" if a["id"] == me else ""
             print(f'{a["status"]:9}  {a["role"]:13}  {a["name"]}{mark}  '
                   f'[{a["id"]}]')
+    elif args.cmd == "msg":
+        body = {"to": args.to, "type": args.type}
+        if args.payload:
+            body["payload"] = json.loads(args.payload)
+        else:
+            body["payload"] = {"text": args.text or ""}
+        if args.correlation_id:
+            body["correlation_id"] = args.correlation_id
+        if args.reply_to:
+            body["reply_to"] = args.reply_to
+        print(json.dumps(call(cfg, "POST", "/api/messages", body), indent=2))
+    elif args.cmd == "inbox":
+        q = f"?limit={args.limit}"
+        hdrs = {"X-Read": "unread"} if args.unread else None
+        d = call(cfg, "GET", "/api/messages" + q, extra_headers=hdrs)
+        print(f'unread: {d["unread"]}')
+        for m in d["items"]:
+            p = m.get("payload", {})
+            text = p.get("text", json.dumps(p)) if isinstance(p, dict) else str(p)
+            flag = "• " if m["status"] == "unread" else "  "
+            print(f'{flag}{m["from"]:24} [{m["type"]:13}] {text[:80]}  ({m["id"]})')
+            if args.mark_read and m["status"] == "unread":
+                call(cfg, "POST", f"/api/messages/{m['id']}/read", {})
     elif args.cmd == "worker":
         run_worker(cfg, poll=args.poll, heartbeat=args.heartbeat,
                    once=args.once, dry_run=args.dry_run)
