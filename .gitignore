@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local state (DB + artifacts) — never commit
+data/
+*.db
+*.db-shm
+*.db-wal
