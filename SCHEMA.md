@@ -122,7 +122,7 @@ HTTP status (401 bad/missing key, 403 role-forbidden, 404 unknown id,
 ### Agents (self-service)
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/agents/join` | **none** | Open self-service join. A new box registers itself as `observer` and gets a one-time key. Body: `{name, caps?}`. Admin then assigns a real role. This is how remote agents check in without an admin token. |
+| POST | `/api/agents/join` | **join key** | Gated self-service join. A new box presents a `join_key` (provisioned by the admin via `POST /api/admin/join-key`) and registers as `observer`. Body: `{name, join_key, caps?}`. Admin then assigns a real role. This is how remote guests enroll without holding the full admin token. |
 | POST | `/api/agents/register` | admin | Create agent with a chosen role + return plaintext key ONCE. Body: `{name, role, caps?}` |
 | GET | `/api/agents` | agent | List agents (id, name, role, status, last_seen). No keys. |
 | GET | `/api/agents/me` | agent | Caller's own record. |
@@ -163,7 +163,8 @@ Protected by `Authorization: Bearer <ADMIN_TOKEN>`.
 | GET | `/api/admin/keys` | List agents with key metadata (no plaintext). |
 | POST | `/api/admin/keys` | Issue a NEW key for an existing agent (old key revoked). Body: `{agent_id}`. Returns plaintext once. |
 | DELETE | `/api/admin/keys/{agent_id}` | Revoke agent's key (agent disabled until re-issued). |
-| PATCH | `/api/admin/agents/{id}` | Change role/status. Body: `{role?, status?}`. |
+| PATCH | `/api/admin/agents/{id}` | Change role/status/caps. Body: `{role?, status?, caps?}`. |
+| POST | `/api/admin/join-key` | Issue/rotate the join key guests present to `/api/agents/join`. Returns plaintext once (stored hashed). |
 | GET | `/api/admin/stats` | Org-wide counters: agents by role, tasks by status, throughput. |
 
 ### Web UI

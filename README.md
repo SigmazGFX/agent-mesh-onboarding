@@ -21,26 +21,33 @@ console.
 | [`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) | How an agent uses it — worker loop, client, A2A migration map. |
 | [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) | Running it on a remote Hermes box behind a reverse proxy (e.g. bytemecarl.io). |
 
-## Install (make a box an agent)
+## Install (master or guest)
 
-Pointing at this repo and running the installer is enough:
+Pointing at this repo and running the installer is enough. It asks whether this
+box is a **master** (orchestrator) or a **guest** that enrolls in a swarm:
 
 ```bash
 git clone https://github.com/SigmazGFX/agent-mesh.git
 cd agent-mesh
-./install.sh https://bytemecarl.io/agent-mesh     # or pass no arg to be prompted
+./install.sh                 # interactive: pick master | guest
+# or non-interactive:
+./install.sh master          # stand up the orchestrator HERE
+./install.sh guest           # enroll THIS box into an existing swarm
 ```
 
-The installer:
-1. Asks for (or takes) the **base address of the master orchestrator**.
-2. Joins the mesh as an `observer` via `POST /api/agents/join` (no admin token
-   needed) and prints the one-time API key.
-3. Stores `{base_url, api_key, agent_id}` in `~/.config/agent-mesh/config.json`.
-4. Checks in so the orchestrator sees the new agent.
-5. Installs a `mesh` CLI on PATH (`~/.local/bin/mesh`).
+**Master mode** runs the endpoint locally as a systemd user service, stores the
+admin token, prints the console URL + admin token, and issues a **join key** to
+hand out to guests.
 
-Then the **admin assigns a real role** in the console (Agents page) — until then
-the agent can only observe. Day-to-day from the box:
+**Guest mode** asks for the swarm's **base URL** and a **join key**, then:
+1. Enrolls via `POST /api/agents/join` (presents the join key; lands as
+   `observer`).
+2. Stores `{base_url, api_key, agent_id}` in `~/.config/agent-mesh/config.json`.
+3. Checks in so the master sees the new agent.
+4. Installs a `mesh` CLI on PATH (`~/.local/bin/mesh`).
+
+Then the **swarm admin assigns a real role** in the console (Agents page) —
+until then the agent can only observe. Day-to-day from the box:
 
 ```bash
 mesh status        # who am I, what role

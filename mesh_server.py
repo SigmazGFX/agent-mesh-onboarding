@@ -497,6 +497,7 @@ class Handler(BaseHTTPRequestHandler):
         ("POST",   r"^/api/admin/keys$",                       "ep_admin_issue"),
         ("DELETE", r"^/api/admin/keys/(?P<id>[^/]+)$",         "ep_admin_revoke"),
         ("PATCH",  r"^/api/admin/agents/(?P<id>[^/]+)$",       "ep_admin_patch"),
+        ("POST",   r"^/api/admin/join-key$",                   "ep_admin_joinkey"),
         ("GET",    r"^/api/admin/stats$",                      "ep_admin_stats"),
         ("GET",    r"^/$",                                     "ep_ui"),
     ]
@@ -587,11 +588,18 @@ class Handler(BaseHTTPRequestHandler):
                         201)
 
     def ep_join(self, g):
-        # Open self-service join: a new box registers itself as an 'observer'
-        # (read-only, cannot pull/dispatch/review). The admin then promotes it
-        # to a real role from the console. This is how a remote agent checks in
-        # without holding an admin token.
+        # Gated self-service join: a new box presents a JOIN KEY (provisioned by
+        # the admin in the console) to register itself as an 'observer'. The
+        # admin then promotes it to a real role. This keeps /join from being an
+        # open door on a public domain while still letting a remote agent check
+        # in without holding the full admin token.
         body = self._json_body()
+        jk = (body.get("join_key") or "").strip()
+        if not jk:
+            raise PermissionError("join_key required")
+        expected = self.store.get_meta("join_key_hash")
+        if not expected or not hmac.compare_digest(sha256_hex(jk.encode()), expected):
+            raise PermissionError("invalid join key")
         name = (body.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
@@ -606,7 +614,7 @@ class Handler(BaseHTTPRequestHandler):
         self.store.add_agent(aid, name, "observer", caps, sha256_hex(key.encode()))
         self.store.touch_agent(aid)
         self.store.add_event(aid, "agent.joined", None,
-                             {"agent": aid, "note": "self-join as observer"})
+                             {"agent": aid, "note": "joined with join-key as observer"})
         self._send_json({"agent": self.mesh.agent_pub(self.store.get_agent(aid)),
                          "api_key": key,
                          "note": "joined as 'observer'; admin must assign a role"},
@@ -998,6 +1006,16 @@ class Handler(BaseHTTPRequestHandler):
             "completion_rate": round(done / total_tasks, 3) if total_tasks else 0,
         })
 
+    def ep_admin_joinkey(self, g):
+        # Issue (or rotate) the join key. Returns the plaintext ONCE; stored
+        # hashed. New agents present it to POST /api/agents/join.
+        self._auth(need_admin=True)
+        jk = "join_" + secrets.token_urlsafe(24)
+        self.store.set_meta("join_key_hash", sha256_hex(jk.encode()))
+        self.store.add_event("admin", "join_key.issued", None, {})
+        self._send_json({"join_key": jk,
+                         "note": "hand this to new agents; shown only once"})
+
     # ---- web UI
     def ep_ui(self, g):
         base = getattr(Handler, "base_path", "") or ""
@@ -1216,7 +1234,15 @@ function evLine(e){return `<div class="ev"><b>${ago(e.ts)}</b> · <b>${esc(e.act
 function pageAgents(){
   const A=CACHE.agents||[];
   return shell("agents","Agents & keys",`
+   <div class="card" style="margin-bottom:16px">
+     <h2>Join key (for new agents)</h2>
+     <div class="row">
+       <span class="ev" style="flex:1">New boxes present this key to <span class="mono">/api/agents/join</span> (they land as <b>observer</b>; assign a role below). Issuing a new one invalidates the old.</span>
+       <button class="primary" onclick="issueJoinKey()">Issue / rotate join key</button>
+     </div>
+   </div>
    <div class="card">
+     <h2>Register an agent directly</h2>
      <div class="row">
        <input id="na" class="grow" placeholder="new agent name">
        <select id="nr" style="width:auto">${roleOpts("worker")}</select>
@@ -1399,6 +1425,12 @@ async function regAgent(){
     flash("registered "+d.agent.id+(caps.length?" (admin cap)":""));
     window.prompt("API key (copy now — shown once):",d.api_key);
     loadAll();}catch(e){flash(e.message,1)}
+}
+async function issueJoinKey(){
+  try{const d=await api("/api/admin/join-key",{method:"POST",admin:true,body:{}});
+    window.prompt("JOIN KEY (hand to new agents; old one is now invalid):\n\n"+
+      "./install.sh <orchestrator-url> "+d.join_key, d.join_key);
+    flash("join key issued");}catch(e){flash(e.message,1)}
 }
 async function issueKey(id){try{const d=await api("/api/admin/keys",{method:"POST",admin:true,body:{agent_id:id}});window.prompt("New key (old revoked):",d.api_key);loadAll()}catch(e){flash(e.message,1)}}
 async function revokeKey(id){if(!confirm("Revoke key for "+id+"?"))return;try{await api("/api/admin/keys/"+id,{method:"DELETE",admin:true});flash("revoked");loadAll()}catch(e){flash(e.message,1)}}
