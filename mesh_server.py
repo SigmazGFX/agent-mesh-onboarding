@@ -473,6 +473,7 @@ class Handler(BaseHTTPRequestHandler):
     ROUTES = [
         ("GET",    r"^/api/health$",                          "ep_health"),
         ("POST",   r"^/api/agents/register$",                 "ep_register"),
+        ("POST",   r"^/api/agents/join$",                     "ep_join"),
         ("GET",    r"^/api/agents$",                           "ep_agents"),
         ("GET",    r"^/api/agents/me$",                        "ep_me"),
         ("PATCH",  r"^/api/agents/me$",                        "ep_patch_me"),
@@ -583,6 +584,32 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"agent": self.mesh.agent_pub(self.store.get_agent(aid)),
                          "api_key": key,
                          "note": "store this key now — it is shown only once"},
+                        201)
+
+    def ep_join(self, g):
+        # Open self-service join: a new box registers itself as an 'observer'
+        # (read-only, cannot pull/dispatch/review). The admin then promotes it
+        # to a real role from the console. This is how a remote agent checks in
+        # without holding an admin token.
+        body = self._json_body()
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise ValueError("name required")
+        caps = body.get("caps") or []
+        if not isinstance(caps, list):
+            raise ValueError("caps must be a list")
+        aid = (body.get("id") or "").strip() or \
+            f"{name.lower().replace(' ', '-')}-{uuid.uuid4().hex[:8]}"
+        if self.store.get_agent(aid):
+            raise ValueError(f"agent id '{aid}' already exists — ask admin to rekey")
+        key = gen_key()
+        self.store.add_agent(aid, name, "observer", caps, sha256_hex(key.encode()))
+        self.store.touch_agent(aid)
+        self.store.add_event(aid, "agent.joined", None,
+                             {"agent": aid, "note": "self-join as observer"})
+        self._send_json({"agent": self.mesh.agent_pub(self.store.get_agent(aid)),
+                         "api_key": key,
+                         "note": "joined as 'observer'; admin must assign a role"},
                         201)
 
     def ep_agents(self, g):

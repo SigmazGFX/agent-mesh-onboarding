@@ -21,6 +21,34 @@ console.
 | [`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) | How an agent uses it — worker loop, client, A2A migration map. |
 | [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) | Running it on a remote Hermes box behind a reverse proxy (e.g. bytemecarl.io). |
 
+## Install (make a box an agent)
+
+Pointing at this repo and running the installer is enough:
+
+```bash
+git clone https://github.com/SigmazGFX/agent-mesh.git
+cd agent-mesh
+./install.sh https://bytemecarl.io/agent-mesh     # or pass no arg to be prompted
+```
+
+The installer:
+1. Asks for (or takes) the **base address of the master orchestrator**.
+2. Joins the mesh as an `observer` via `POST /api/agents/join` (no admin token
+   needed) and prints the one-time API key.
+3. Stores `{base_url, api_key, agent_id}` in `~/.config/agent-mesh/config.json`.
+4. Checks in so the orchestrator sees the new agent.
+5. Installs a `mesh` CLI on PATH (`~/.local/bin/mesh`).
+
+Then the **admin assigns a real role** in the console (Agents page) — until then
+the agent can only observe. Day-to-day from the box:
+
+```bash
+mesh status        # who am I, what role
+mesh checkin       # heartbeat
+mesh pull          # claim next task (needs worker+ role)
+mesh result <id> --status ok --output '{"commit":"abc"}'
+```
+
 ## Running it (this box)
 
 Installed as a systemd user service, survives reboots:

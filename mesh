@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""mesh — tiny CLI for an installed agent-mesh agent.
+
+Reads ~/.config/agent-mesh/config.json (written by install.sh) and talks to
+the orchestrator. Stdlib-only.
+
+Usage:
+  mesh status                 # health + who am I
+  mesh checkin                # heartbeat
+  mesh pull                   # claim next task (prints JSON, or 'none')
+  mesh start <task_id>
+  mesh progress <task_id> [--pct N] [--note TEXT]
+  mesh result <task_id> --status ok|failed|partial [--output JSON] [--error MSG]
+  mesh upload <task_id> <path>
+  mesh tasks [--status S]     # list tasks
+  mesh events [--task-id T]   # recent events
+"""
+import argparse
+import json
+import os
+import sys
+import urllib.request
+import urllib.error
+
+CFG = os.path.expanduser("~/.config/agent-mesh/config.json")
+
+
+def load_cfg():
+    if not os.path.exists(CFG):
+        sys.exit("no config at %s — run ./install.sh first" % CFG)
+    with open(CFG) as f:
+        return json.load(f)
+
+
+def call(cfg, method, path, body=None):
+    url = cfg["base_url"].rstrip("/") + path
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", "Bearer " + cfg["api_key"])
+    if data:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            d = json.loads(e.read().decode())
+        except Exception:
+            d = {"detail": str(e)}
+        sys.exit("%s %s -> HTTP %s: %s" % (method, path, e.code, d.get("detail", d)))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="mesh", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("status")
+    sub.add_parser("checkin")
+    sub.add_parser("pull")
+    p = sub.add_parser("start"); p.add_argument("task_id")
+    p = sub.add_parser("progress"); p.add_argument("task_id")
+    p.add_argument("--pct", type=float); p.add_argument("--note")
+    p = sub.add_parser("result"); p.add_argument("task_id")
+    p.add_argument("--status", required=True, choices=["ok", "failed", "partial"])
+    p.add_argument("--output"); p.add_argument("--error")
+    p = sub.add_parser("upload"); p.add_argument("task_id"); p.add_argument("path")
+    p = sub.add_parser("tasks"); p.add_argument("--status")
+    p = sub.add_parser("events"); p.add_argument("--task-id")
+    args = ap.parse_args()
+    cfg = load_cfg()
+
+    if args.cmd == "status":
+        print("orchestrator:", cfg["base_url"])
+        print("agent       :", cfg["agent_id"])
+        me = call(cfg, "GET", "/api/agents/me")
+        print("role        :", me["role"], "| status:", me["status"])
+    elif args.cmd == "checkin":
+        print(json.dumps(call(cfg, "POST", "/api/agents/checkin", {})))
+    elif args.cmd == "pull":
+        d = call(cfg, "GET", "/api/work/pull")
+        print(json.dumps(d["task"], indent=2) if d.get("task") else "none")
+    elif args.cmd == "start":
+        print(json.dumps(call(cfg, "POST", f"/api/tasks/{args.task_id}/start", {})))
+    elif args.cmd == "progress":
+        body = {}
+        if args.pct is not None:
+            body["pct"] = args.pct
+        if args.note:
+            body["note"] = args.note
+        print(json.dumps(call(cfg, "POST", f"/api/tasks/{args.task_id}/progress", body)))
+    elif args.cmd == "result":
+        body = {"status": args.status}
+        if args.output:
+            body["output"] = json.loads(args.output)
+        if args.error:
+            body["error"] = args.error
+        print(json.dumps(call(cfg, "POST", f"/api/tasks/{args.task_id}/result", body), indent=2))
+    elif args.cmd == "upload":
+        # multipart upload
+        import secrets
+        boundary = "----mesh" + secrets.token_hex(8)
+        with open(args.path, "rb") as f:
+            file_bytes = f.read()
+        fname = os.path.basename(args.path)
+        body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"task_id\"\r\n\r\n"
+                f"{args.task_id}\r\n--{boundary}\r\nContent-Disposition: form-data; "
+                f"name=\"file\"; filename=\"{fname}\"\r\n"
+                f"Content-Type: application/octet-stream\r\n\r\n").encode() \
+            + file_bytes + f"\r\n--{boundary}--\r\n".encode()
+        req = urllib.request.Request(cfg["base_url"].rstrip("/") + "/api/artifacts",
+                                     data=body, method="POST")
+        req.add_header("Authorization", "Bearer " + cfg["api_key"])
+        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        with urllib.request.urlopen(req, timeout=60) as r:
+            print(json.dumps(json.loads(r.read().decode()), indent=2))
+    elif args.cmd == "tasks":
+        q = f"?status={args.status}" if args.status else ""
+        print(json.dumps(call(cfg, "GET", "/api/tasks" + q), indent=2))
+    elif args.cmd == "events":
+        q = f"?task_id={args.task_id}" if args.task_id else ""
+        print(json.dumps(call(cfg, "GET", "/api/events" + q), indent=2))
+
+
+if __name__ == "__main__":
+    main()
