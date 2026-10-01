@@ -202,6 +202,9 @@ Message shape:
 original `id` so conversations thread. CLI: `mesh msg <agent> "text"`,
 `mesh inbox [--unread] [--mark-read]`, and **`mesh listen`** (long-poll loop —
 prints each incoming message as it lands, ~1s latency; `--mark-read` auto-acks).
+The **worker daemon** can do both at once: `mesh worker --listen [--mark-read]`
+runs the task poll/execute/report loop *and* a background A2A listener thread,
+so an agent gets work and peer messages in one process.
 
 ### Artifacts
 | Method | Path | Auth | Description |

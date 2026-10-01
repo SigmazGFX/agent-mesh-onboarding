@@ -30,6 +30,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -109,6 +110,10 @@ def main():
     p.add_argument("--heartbeat", type=float, default=60, help="seconds between presence heartbeats (<90)")
     p.add_argument("--once", action="store_true", help="single tick then exit (cron use)")
     p.add_argument("--dry-run", action="store_true", help="pull+report but don't execute")
+    p.add_argument("--listen", action="store_true",
+                   help="also long-poll for incoming A2A messages in a background thread")
+    p.add_argument("--mark-read", action="store_true",
+                   help="with --listen: auto-mark received messages read")
     args = ap.parse_args()
     cfg = load_cfg()
 
@@ -214,7 +219,8 @@ def main():
             print("\n(listen stopped)")
     elif args.cmd == "worker":
         run_worker(cfg, poll=args.poll, heartbeat=args.heartbeat,
-                   once=args.once, dry_run=args.dry_run)
+                   once=args.once, dry_run=args.dry_run,
+                   listen=args.listen, mark_read=args.mark_read)
 
 
 def execute_task(cfg, task):
@@ -242,7 +248,8 @@ def execute_task(cfg, task):
     return "ok", {"note": "no spec.command; treated as no-op"}
 
 
-def run_worker(cfg, poll=30.0, heartbeat=60.0, once=False, dry_run=False):
+def run_worker(cfg, poll=30.0, heartbeat=60.0, once=False, dry_run=False,
+               listen=False, mark_read=False):
     stop = {"flag": False}
 
     def _sig(_n, _f):
@@ -252,10 +259,40 @@ def run_worker(cfg, poll=30.0, heartbeat=60.0, once=False, dry_run=False):
 
     me = call(cfg, "GET", "/api/agents/me", _exit=False)
     print(f"[mesh worker] {me['name']} role={me['role']} "
-          f"poll={poll}s heartbeat={heartbeat}s dry_run={dry_run}", flush=True)
+          f"poll={poll}s heartbeat={heartbeat}s dry_run={dry_run}"
+          f"{' +listen' if listen else ''}", flush=True)
     if me["role"] == "observer":
         print("[mesh worker] WARNING: role is 'observer' — cannot pull work. "
               "Ask the admin to assign a worker+ role.", flush=True)
+
+    # Optional background A2A listener (long-poll). Runs in its own thread so it
+    # never blocks task pulling; messages print as they land (~1s latency).
+    if listen:
+        def _msg_loop():
+            last_id = 0
+            while not stop["flag"]:
+                try:
+                    d = call(cfg, "GET",
+                             f"/api/messages/stream?last_id={last_id}&timeout=25",
+                             _exit=False)
+                    for m in d.get("items", []):
+                        p = m.get("payload", {})
+                        text = (p.get("text", json.dumps(p))
+                                if isinstance(p, dict) else str(p))
+                        print(f'[mesh msg] {m["from"]} [{m["type"]}] {text}',
+                              flush=True)
+                        if mark_read:
+                            call(cfg, "POST", f"/api/messages/{m['id']}/read",
+                                 {}, _exit=False)
+                    last_id = d.get("last_id", last_id)
+                except Exception as e:
+                    if stop["flag"]:
+                        break
+                    print(f"[mesh msg] stream error: {e}; retrying in 5s",
+                          flush=True)
+                    _sleep(5, stop)
+        threading.Thread(target=_msg_loop, daemon=True).start()
+        print("[mesh worker] A2A listener started (background)", flush=True)
 
     last_hb = 0.0
     while not stop["flag"]:
