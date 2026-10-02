@@ -2649,8 +2649,8 @@ class Handler(BaseHTTPRequestHandler):
             self._err(422, "text too long (max 2000 chars)")
             return
         sender_name = (body.get("sender_name") or "").strip() or \
-                      agent.get("name") or "agent"
-        sender = agent.get("id") or "agent"
+                      agent["name"] or "agent"
+        sender = agent["id"] or "agent"
         msg = self.store.add_chat_message(sender, sender_name, text)
         CHAT_HUB.broadcast(msg)
         self._send_json(msg, 201)
