@@ -53,25 +53,25 @@ echo
 if [ "$MODE" = "master" ]; then
   mkdir -p "$STATE" "$HOME/.config/systemd/user"
 
-  # 1. generate + store the admin token (idempotent: reuse if present)
-  ADMIN_TOKEN=""
-  ENVF="${HOME}/.hermes/.env"
-  if [ -f "$ENVF" ] && grep -q '^MESH_ADMIN_TOKEN=' "$ENVF"; then
-    ADMIN_TOKEN="$(grep '^MESH_ADMIN_TOKEN=' "$ENVF" | cut -d= -f2)"
-    echo "Reusing existing MESH_ADMIN_TOKEN from $ENVF"
+  # 1. generate + store the admin token (idempotent: reuse if present).
+  #    Portable: stored in ~/.local/state/agent-mesh/admin_token (mode 600),
+  #    NOT tied to any agent platform. A pre-set MESH_ADMIN_TOKEN env var wins.
+  ADMIN_TOKEN="${MESH_ADMIN_TOKEN:-}"
+  TOKF="$STATE/admin_token"
+  if [ -z "$ADMIN_TOKEN" ] && [ -f "$TOKF" ]; then
+    ADMIN_TOKEN="$(cat "$TOKF")"
+    echo "Reusing existing admin token from $TOKF"
   fi
   if [ -z "$ADMIN_TOKEN" ]; then
     ADMIN_TOKEN="adm_$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')"
-    if [ -f "$ENVF" ]; then
-      grep -v '^MESH_ADMIN_TOKEN=' "$ENVF" > "$ENVF.tmp" || true
-      mv "$ENVF.tmp" "$ENVF"
-    fi
-    printf 'MESH_ADMIN_TOKEN=%s\n' "$ADMIN_TOKEN" >> "$ENVF"
-    chmod 600 "$ENVF" 2>/dev/null || true
-    echo "Generated admin token, stored in $ENVF"
+    printf '%s' "$ADMIN_TOKEN" > "$TOKF"
+    chmod 600 "$TOKF" 2>/dev/null || true
+    echo "Generated admin token, stored in $TOKF"
   fi
 
-  # 2. write the systemd unit (point ExecStart at the actual repo path)
+  # 2. write the systemd unit (point ExecStart at the actual repo path).
+  #    Token is read from $TOKF via a wrapper so this works on any platform
+  #    with systemd; if systemd is absent we fall back to a foreground hint.
   cat > "$UNIT" <<EOF
 [Unit]
 Description=agent-mesh endpoint (master/orchestrator)
@@ -79,8 +79,8 @@ After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=%h/.hermes/.env
-ExecStart=/usr/bin/python3 ${SERVER} --data %h/.local/state/agent-mesh --host ${HOST} --port ${PORT}
+Environment=MESH_ADMIN_TOKEN=\$(cat ${TOKF})
+ExecStart=/usr/bin/python3 ${SERVER} --data ${STATE} --host ${HOST} --port ${PORT}
 Restart=on-failure
 RestartSec=3
 
@@ -88,17 +88,28 @@ RestartSec=3
 WantedBy=default.target
 EOF
 
-  # If an agent-mesh service is ALREADY installed, don't clobber it — just
-  # report and reuse what's running (idempotent re-run / already-master box).
-  if systemctl --user list-unit-files 2>/dev/null | grep -q '^agent-mesh\.service'; then
-    echo "Existing 'agent-mesh' user service detected — leaving it as-is."
-    systemctl --user daemon-reload || true
-    systemctl --user restart agent-mesh || true
-    sleep 1.5
+  # Install the service only if systemd user sessions are actually available.
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files >/dev/null 2>&1; then
+    # If an agent-mesh service is ALREADY installed, don't clobber it — just
+    # report and reuse what's running (idempotent re-run / already-master box).
+    if systemctl --user list-unit-files 2>/dev/null | grep -q '^agent-mesh\.service'; then
+      echo "Existing 'agent-mesh' user service detected — leaving it as-is."
+      systemctl --user daemon-reload || true
+      systemctl --user restart agent-mesh || true
+      sleep 1.5
+    else
+      systemctl --user daemon-reload
+      systemctl --user enable --now agent-mesh
+      sleep 1.5
+    fi
+    SERVICE_MODE="systemd user service (systemctl --user status agent-mesh)"
   else
-    systemctl --user daemon-reload
-    systemctl --user enable --now agent-mesh
+    # No systemd (containers, macOS, minimal boxes): run in background + document.
+    nohup /usr/bin/python3 "${SERVER}" --data "${STATE}" --host "${HOST}" --port "${PORT}" \
+      >> "${STATE}/server.log" 2>&1 &
+    echo $! > "${STATE}/server.pid"
     sleep 1.5
+    SERVICE_MODE="background process (pid $(cat "${STATE}/server.pid") 2>/dev/null; log: ${STATE}/server.log)"
   fi
 
   # 3. health check
@@ -122,7 +133,8 @@ EOF
 
   Console     : http://${HOST}:${PORT}/   (unlock with the admin token)
   Admin token : $ADMIN_TOKEN
-  Service     : systemctl --user status agent-mesh
+               (stored in ${TOKF})
+  Service     : $SERVICE_MODE
 
   Join key for guests (hand this out):
   ------------------------------------

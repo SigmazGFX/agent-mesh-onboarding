@@ -1,8 +1,14 @@
 # agent-mesh — Agent Integration Guide
 
 How to give an agent its mesh identity and make it actually use the endpoint.
-Covers Hermes agents in detail (that's what we have today) and notes for any
-other runtime, since the contract is plain HTTP.
+
+**Platform-agnostic by design.** agent-mesh is plain HTTP + JSON with Bearer
+auth. There is **no SDK, no framework dependency, and nothing Hermes-specific in
+the core** (`mesh_server.py`, `mesh` CLI, `MeshClient` are pure Python stdlib).
+Any agent platform that can (a) store a secret and (b) send an HTTP request can
+join: Hermes, Claude Code, Codex, OpenCode, a custom LLM loop, a cron job, or a
+plain script. The sections below show Hermes as one example and give a
+runtime-agnostic pattern for everything else.
 
 ---
 
@@ -68,11 +74,48 @@ mc = MeshClient(os.environ["MESH_BASE_URL"], os.environ["MESH_API_KEY"])
 > like a password. If it leaks, rekey from the console — the old one dies
 > instantly.
 
-### Any other runtime
+### Any other runtime (generic agent platforms)
 
-Same idea: keep the key in an env var or secret store, inject it at process
-start. The only requirement is that the agent can send
-`Authorization: Bearer <key>` on each request.
+The only requirements are: store the key as a secret, and send
+`Authorization: Bearer *** on each request. That's it — no Hermes, no SDK.
+
+**The runtime-agnostic worker pattern.** Any LLM agent (Claude Code, Codex,
+OpenCode, a custom loop, etc.) drives `agent_worker.py`, which wraps the HTTP
+calls for you. The agent's job is to *do the work* between claim and report:
+
+```bash
+# 1. Claim one task assigned to this agent (prints its full spec as JSON).
+#    Blocks until work is available, then exits.
+python3 /path/to/agent-mesh/agent_worker.py once --poll 15
+
+# 2. The agent reads the printed spec, does the REAL work in its own tools
+#    (edit files, run builds, etc.), then reports a genuine result:
+python3 /path/to/agent-mesh/agent_worker.py report <task_id> \
+    --status ok --output '{"summary":"...","commit":"abc"}'
+# ...or on failure:
+python3 /path/to/agent-mesh/agent_worker.py report <task_id> \
+    --status failed --error "what went wrong"
+```
+
+Point `agent_worker.py` at the swarm by giving it the same config the `mesh` CLI
+uses (`~/.config/agent-mesh/config.json` with `base_url` + `api_key`). To use a
+different location, set `MESH_CONFIG` or edit `CFG` at the top of the file.
+
+**Or skip the helper entirely** — the whole contract is a handful of REST calls
+(see §5 raw-HTTP examples and SCHEMA.md). A platform with no Python can do it
+with `curl`:
+
+```bash
+KEY=***        # the agent's mesh_ key
+BASE=https://swarm.example.com/agent-mesh
+curl -s $BASE/api/agents/checkin -X POST -H "Authorization: Bearer ***" -d '{}'
+curl -s $BASE/api/work/pull      -H "Authorization: Bearer ***"   # -> {"task":{...}} or null
+```
+
+**Presence:** whatever your platform's scheduler is (cron, systemd timer, the
+agent's own loop), fire `checkin` at least every ~60s so the server keeps you
+*online* (window is 90s). On Linux a tiny `mesh-presence` service does this; on
+other platforms a cron line or the agent's heartbeat tick is equivalent.
 
 ---
 

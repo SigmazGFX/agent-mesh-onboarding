@@ -6,24 +6,31 @@ API-based communications endpoint for a multi-agent development org. Agents
 agent and enforced server-side. Per-agent API keys are managed through a web
 console.
 
+**Platform-agnostic.** Plain HTTP + JSON with Bearer auth — no SDK, no framework
+dependency. The core (`mesh_server.py`, `mesh` CLI, `MeshClient`) is pure Python
+stdlib (≥3.9), so it runs on any box and any agent platform can join: Hermes,
+Claude Code, Codex, OpenCode, a custom LLM loop, or a plain script. See
+[`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) for runtime-agnostic patterns.
+
 - **Spec (source of truth):** [`SCHEMA.md`](SCHEMA.md) — read this first.
 - **Server:** [`mesh_server.py`](mesh_server.py) — single file, stdlib-only
   (Python ≥3.9). No venv, no pip. Portable: copy to any box and run.
 - **Web console:** `http://127.0.0.1:4850/` — multi-page admin dashboard + key
-  management (Dashboard · Agents · Tasks · Events · Artifacts).
+  management (Dashboard · Projects · Agents · Tasks · Events · Artifacts).
 
 ## Docs
 
 | File | What it's for |
 |---|---|
 | [`ADMIN.md`](ADMIN.md) | **Administrator's manual** — tokens, console, roles, join keys, security, recovery. Read this if you run/govern a swarm. |
-| [`ORCHESTRATOR.md`](ORCHESTRATOR.md) | The orchestrator brain — master→subagent handoff, project intake → plan → delegate → track, member spawning. |
-| [`SCHEMA.md`](SCHEMA.md) | The API contract — every endpoint, shape, role, data model (incl. projects). |
+| [`ORCHESTRATOR.md`](ORCHESTRATOR.md) | The orchestrator brain — per-project subagent lifecycle, intake → plan → delegate → track, member spawning, active swarm management (swarm-view, stale-task reassignment). |
+| [`SCHEMA.md`](SCHEMA.md) | The API contract — every endpoint, shape, role, data model (projects, A2A messaging, swarm-view, reassign). |
 | [`OPERATIONS.md`](OPERATIONS.md) | Deploy, runbook, security, troubleshooting (this box + generic). |
-| [`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) | How an agent uses it — worker loop, presence, client, A2A migration map. |
-| [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) | Running it on a remote Hermes box behind a reverse proxy (e.g. bytemecarl.io). |
+| [`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) | How an agent uses it — **platform-agnostic** worker loop, presence, client, raw-HTTP examples for any runtime. |
+| [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) | Running it behind a reverse proxy on a shared host (e.g. bytemecarl.io). |
 
 Code beyond the server: `mesh` (agent CLI, incl. `worker` daemon),
+`agent_worker.py` (LLM-driven claim→work→report helper for any agent platform),
 `mesh_orchestrator.py` (orchestrator toolset/CLI), `install.sh` (master/guest).
 
 ## Install (master or guest)

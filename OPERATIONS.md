@@ -55,7 +55,7 @@ After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=%h/.hermes/.env          # supplies MESH_ADMIN_TOKEN
+Environment=MESH_ADMIN_TOKEN=$(cat %h/.local/state/agent-mesh/admin_token)
 ExecStart=/usr/bin/python3 %h/Work/agent-mesh/mesh_server.py \
             --data %h/.local/state/agent-mesh --port 4850
 Restart=on-failure
@@ -306,7 +306,7 @@ disabled. Reissue from the console (rekey) and update the agent's config.
 **"403 role 'worker' cannot create tasks"** — expected; that's the hierarchy
 working. Use an orchestrator/planner key for dispatch.
 
-**Lost the admin token** — it's in `~/.hermes/.env` as `MESH_ADMIN_TOKEN` on
+**Lost the admin token** — it's in `~/.local/state/agent-mesh/admin_token` on
 this box. On a fresh box where it wasn't saved, the only reset is wiping the
 state dir (`rm -rf ~/.local/state/agent-mesh`) and restarting, which regenerates
 a token (and loses agents/tasks — do this deliberately).

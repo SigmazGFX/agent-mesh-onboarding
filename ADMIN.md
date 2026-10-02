@@ -57,9 +57,11 @@ cd agent-mesh
 ```
 
 What happens:
-1. Generates (or reuses) the **admin token** and stores it in `~/.hermes/.env`
-   as `MESH_ADMIN_TOKEN`.
-2. Installs/updates the `agent-mesh` systemd **user** service and starts it.
+1. Generates (or reuses) the **admin token** and stores it in
+   `~/.local/state/agent-mesh/admin_token` (mode 600). A pre-set
+   `MESH_ADMIN_TOKEN` env var takes precedence.
+2. Installs/updates the `agent-mesh` service and starts it — a systemd **user**
+   service where available, otherwise a background process (containers/macOS).
 3. Health-checks the endpoint.
 4. **Issues a join key** and prints it.
 
@@ -86,11 +88,12 @@ the join key can be re-issued anytime (which invalidates the old one).
 
 ### Where it lives
 - **Printed once** by `./install.sh master`.
-- **Stored** on the master box in `~/.hermes/.env` → `MESH_ADMIN_TOKEN=…`.
+- **Stored** on the master box in `~/.local/state/agent-mesh/admin_token`
+  (mode 600). A pre-set `MESH_ADMIN_TOKEN` env var takes precedence.
 
 ### Reading it later
 ```bash
-grep MESH_ADMIN_TOKEN ~/.hermes/.env
+cat ~/.local/state/agent-mesh/admin_token
 ```
 
 ### Using it
@@ -104,11 +107,13 @@ Out-of-band, like any root secret (encrypted channel, password manager, in
 person). Anyone holding it has full administrative control of the swarm.
 
 ### Rotation & recovery
-- **Rotate:** issue a new token and update `~/.hermes/.env`, then restart the
-  service (`systemctl --user restart agent-mesh`). Old token stops working.
-  *(An in-console "rotate admin token" action is a planned convenience — see
-  §10 Roadmap.)*
-- **Lost it:** read it from `~/.hermes/.env`. If that's gone too, the only reset
+- **Rotate:** issue a new token, replace the contents of
+  `~/.local/state/agent-mesh/admin_token`, then restart the service
+  (`systemctl --user restart agent-mesh` or restart your process manager). Old
+  token stops working. *(An in-console "rotate admin token" action is a planned
+  convenience — see §10 Roadmap.)*
+- **Lost it:** read it from `~/.local/state/agent-mesh/admin_token`. If that's
+  gone too, the only reset
   is wiping state (`rm -rf ~/.local/state/agent-mesh`) and restarting — a fresh
   token is printed, but **all agents/tasks/events are lost**. Last resort only.
 
@@ -245,7 +250,7 @@ internal org*, not a hardened public SaaS:
 **Exposure checklist** (before pointing a public domain at it):
 - [ ] Reverse proxy terminates TLS and routes only the intended path.
 - [ ] Server bound to `127.0.0.1` (not `0.0.0.0`) unless you mean it.
-- [ ] Admin token stored only in `~/.hermes/.env` (mode 600), never committed.
+- [ ] Admin token stored only in `~/.local/state/agent-mesh/admin_token` (mode 600), never committed.
 - [ ] Join key rotated after onboarding batches (limit its usefulness window).
 - [ ] Consider a throttle/WAF in front if the API is internet-reachable.
 
@@ -287,7 +292,7 @@ systemctl --user start agent-mesh             # fresh admin token printed
 
 | Secret | Format | Created by | Stored as | Shown | Rotate via |
 |---|---|---|---|---|---|
-| Admin token | `adm_…` | `install.sh master` | `~/.hermes/.env` (plaintext) + db meta | once at install | edit env + restart |
+| Admin token | `adm_…` | `install.sh master` | `~/.local/state/agent-mesh/admin_token` (mode 600) + db meta | once at install | edit file + restart |
 | Agent key | `mesh_…` | register / join / rekey | SHA-256 hash | once, at creation | console **rekey** |
 | Join key | `join_…` | console / `POST /api/admin/join-key` | SHA-256 hash (db meta) | once, at issuance | console **issue/rotate** |
 

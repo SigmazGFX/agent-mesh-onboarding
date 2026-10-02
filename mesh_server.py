@@ -1470,7 +1470,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ---------------------------------------------------------------- UI
-UI_HTML = """<!doctype html>
+UI_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>agent-mesh console</title>

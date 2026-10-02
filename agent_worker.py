@@ -25,7 +25,8 @@ import time
 import urllib.request
 import urllib.error
 
-CFG = os.path.expanduser("~/.config/agent-mesh/config.json")
+CFG = os.environ.get("MESH_CONFIG") or os.path.expanduser(
+    "~/.config/agent-mesh/config.json")
 
 
 def load_cfg():
