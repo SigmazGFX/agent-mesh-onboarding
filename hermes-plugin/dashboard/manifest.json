@@ -1,0 +1,13 @@
+{
+  "name": "agent-mesh",
+  "label": "agent-mesh",
+  "description": "Local agent-mesh swarm control panel — live status, agents, projects, tasks, and events for the multi-agent work channel.",
+  "icon": "Network",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/agent-mesh",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
