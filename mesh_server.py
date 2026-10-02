@@ -238,6 +238,10 @@ class Store:
     def get_agent(self, aid):
         return self.q1("SELECT * FROM agents WHERE id=?", (aid,))
 
+    def get_agent_by_name(self, name):
+        """Case-insensitive lookup by friendly name (names are meant to be unique)."""
+        return self.q1("SELECT * FROM agents WHERE lower(name)=lower(?)", (name,))
+
     def agent_by_key_hash(self, key_hash):
         return self.q1("SELECT * FROM agents WHERE key_hash=?", (key_hash,))
 
@@ -796,6 +800,12 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("name required")
         if role not in ROLES:
             raise ValueError(f"role must be one of {list(ROLES)}")
+        # Names are meant to be unique for easy identification.
+        existing = self.store.get_agent_by_name(name)
+        if existing:
+            raise ValueError(
+                f"agent name '{name}' is already taken by {existing['id']} — "
+                f"choose a unique friendly name")
         caps = body.get("caps") or []
         if not isinstance(caps, list):
             raise ValueError("caps must be a list")
@@ -828,6 +838,14 @@ class Handler(BaseHTTPRequestHandler):
         name = (body.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
+        # Friendly names are meant to be unique so agents are easy to identify.
+        # Reusing one is almost always a mistake (e.g. installer defaulting to
+        # the hostname), so reject it and tell the caller to pick another.
+        existing = self.store.get_agent_by_name(name)
+        if existing:
+            raise ValueError(
+                f"agent name '{name}' is already taken by {existing['id']} — "
+                f"choose a unique friendly name (or ask admin to remove the old one)")
         caps = body.get("caps") or []
         if not isinstance(caps, list):
             raise ValueError("caps must be a list")

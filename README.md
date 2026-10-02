@@ -70,7 +70,9 @@ join_YYYYYYYYYY
 key can be re-issued anytime (which invalidates the old one).
 
 ### Guest mode (joining a swarm)
-Asks for the swarm's **base URL** and a **join key**, then:
+Asks for the swarm's **base URL**, a **join key**, and a **friendly name** for
+the agent (defaults to the hostname — pick something unique, since names must be
+unique in the swarm). Then:
 1. Enrolls via `POST /api/agents/join` (presents the join key; lands as
    `observer`).
 2. Stores `{base_url, api_key, agent_id}` in `~/.config/agent-mesh/config.json`.

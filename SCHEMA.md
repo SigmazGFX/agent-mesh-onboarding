@@ -142,8 +142,8 @@ HTTP status (401 bad/missing key, 403 role-forbidden, 404 unknown id,
 ### Agents (self-service)
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/agents/join` | **join key** | Gated self-service join. A new box presents a `join_key` (provisioned by the admin via `POST /api/admin/join-key`) and registers as `observer`. Body: `{name, join_key, caps?}`. Admin then assigns a real role. This is how remote guests enroll without holding the full admin token. |
-| POST | `/api/agents/register` | admin | Create agent with a chosen role + return plaintext key ONCE. Body: `{name, role, caps?}` |
+| POST | `/api/agents/join` | **join key** | Gated self-service join. A new box presents a `join_key` (provisioned by the admin via `POST /api/admin/join-key`) and registers as `observer`. Body: `{name, join_key, caps?}`. Admin then assigns a real role. This is how remote guests enroll without holding the full admin token. **`name` must be unique** (case-insensitive) — duplicates are rejected with 422 so agents stay easy to identify. |
+| POST | `/api/agents/register` | admin | Create agent with a chosen role + return plaintext key ONCE. Body: `{name, role, caps?}`. **`name` must be unique** (case-insensitive); duplicates are rejected with 422. |
 | GET | `/api/agents` | agent | List agents (id, name, role, status, last_seen). No keys. |
 | GET | `/api/agents/me` | agent | Caller's own record. |
 | POST | `/api/agents/checkin` | agent | Heartbeat. Updates `last_seen`, sets `online`. Body optional: `{load?, queue_depth?}`. Returns current time + pending task count for caller. |

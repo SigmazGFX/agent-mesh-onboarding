@@ -243,7 +243,16 @@ fi
 
 # 3. enroll
 HOSTN="$(hostname 2>/dev/null || echo agent)"
-AGENT_NAME="${MESH_AGENT_NAME:-$HOSTN}"
+# Ask for a FRIENDLY NAME so the agent is easy to identify in the swarm (the
+# auto id is a random suffix; the name is what humans/orchestrator see). Names
+# must be unique — the master rejects a duplicate, so we prompt clearly.
+AGENT_NAME="${MESH_AGENT_NAME:-}"
+if [ -z "$AGENT_NAME" ]; then
+  printf 'Friendly name for this agent [%s]: ' "$HOSTN"
+  read -r AGENT_NAME
+fi
+[ -n "$AGENT_NAME" ] || AGENT_NAME="$HOSTN"
+echo "Agent name   : $AGENT_NAME"
 
 read -r KEY AGENT_ID < <(python3 - "$BASE" "$AGENT_NAME" "$JOINKEY" <<'PY'
 import json, sys, urllib.request
@@ -257,7 +266,8 @@ try:
         d = json.loads(r.read().decode())
 except Exception as e:
     sys.stderr.write(f"\nerror: join failed: {e}\n"
-                     f"Check the swarm URL and that the join key is valid.\n")
+                     f"Check the swarm URL, that the join key is valid, and\n"
+                     f"that the friendly name is unique (the master rejects duplicates).\n")
     sys.exit(1)
 print(d["api_key"], d["agent"]["id"])
 PY
