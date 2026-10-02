@@ -1539,6 +1539,36 @@ pre{background:#f5f5f7;padding:8px;border-radius:8px;font-size:11px;overflow:aut
 .filters{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .filters select{width:auto}
 .a11y:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+/* ---- onboarding / help ---- */
+.intro{background:#f0f7ff;border:1px solid #cfe4ff;border-radius:10px;padding:10px 14px;
+margin-bottom:16px;font-size:13px;color:#274b6d;line-height:1.55;max-width:900px}
+.intro b{color:#12324f}
+.intro code{background:#e2eefc;padding:1px 5px;border-radius:5px;font-size:12px}
+.tip{position:relative;display:inline-flex;align-items:center;justify-content:center;
+width:15px;height:15px;border-radius:50%;background:var(--bd);color:var(--mut);
+font-size:10px;font-weight:700;cursor:help;vertical-align:middle;margin-left:6px}
+.tip:hover .tipbox,.tip:focus .tipbox{opacity:1;pointer-events:auto}
+.tipbox{position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);
+width:250px;background:var(--fg);color:#fff;font-size:12px;font-weight:400;line-height:1.5;
+padding:9px 11px;border-radius:9px;opacity:0;pointer-events:none;transition:opacity .15s;z-index:20;
+box-shadow:0 6px 20px rgba(0,0,0,.18)}
+.tipbox::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);
+border:6px solid transparent;border-top-color:var(--fg)}
+.helplink{font:inherit;border:none;background:none;color:var(--acc);cursor:pointer;
+font-size:13px;font-weight:500;padding:5px 8px;border-radius:8px}
+.helplink:hover{background:#eaf3ff}
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:50;
+display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+.modal{background:var(--card);border-radius:14px;max-width:680px;width:100%;padding:22px 24px;
+box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.modal h3{font-size:16px;margin-bottom:4px}
+.modal .sub{margin-bottom:14px}
+.modal h4{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);
+margin:16px 0 6px}
+.modal p,.modal li{font-size:13px;line-height:1.55;color:var(--fg)}
+.modal ul{padding-left:18px;margin:4px 0}
+.modal code{background:#f5f5f7;padding:1px 5px;border-radius:5px;font-size:12px}
+.modal .close-x{float:right;border:none;background:none;font-size:20px;cursor:pointer;color:var(--mut);line-height:1}
 </style></head><body>
 <div id="app"></div>
 <div class="flash" id="flash"></div>
@@ -1570,6 +1600,46 @@ function agentPill(s){return pill("p-"+s,s)}
 function roleOpts(sel){return ROLES.map(r=>`<option ${r===sel?"selected":""}>${r}</option>`).join("")}
 function kindOpts(sel){return KINDS.map(k=>`<option ${k===sel?"selected":""}>${k}</option>`).join("")}
 function go(h){location.hash=h}
+// Inline "?" tooltip: <span class="tip">?<span class="tipbox">explanation</span></span>
+function tip(html){return `<span class="tip" tabindex="0" aria-label="help">?<span class="tipbox">${html}</span></span>`}
+// Full "How it works" help modal, opened from the top bar.
+function openHelp(){
+  const el=document.createElement("div");el.className="modal-backdrop";
+  el.innerHTML=`<div class="modal">
+    <button class="close-x" onclick="this.closest('.modal-backdrop').remove()" aria-label="close">×</button>
+    <h3>How agent-mesh works</h3>
+    <div class="sub">A quick mental model for new admins.</div>
+    <h4>The big picture</h4>
+    <p>agent-mesh is a <b>work channel</b> for a team of AI agents (and you). One box runs the
+    <b>orchestrator</b> (this endpoint); other boxes join as <b>agents</b>. Agents check in, get
+    assigned work, report progress, and upload results. You steer it all from this console.</p>
+    <h4>Roles — who can do what</h4>
+    <ul>
+      <li><b>orchestrator / planner</b> — create &amp; assign tasks, spawn members, view the swarm.</li>
+      <li><b>worker</b> — executes tasks <i>assigned to them</i>. Can't grab others' work.</li>
+      <li><b>qa / reviewer</b> — review &amp; approve/reject finished work.</li>
+      <li><b>observer</b> — read-only; what new agents start as until you promote them.</li>
+    </ul>
+    <h4>The task lifecycle</h4>
+    <p><code>queued → claimed → in_progress → done/failed</code>, then optionally
+    <code>approved / rejected</code> by a qa/reviewer. A task only moves when the right role acts on it.</p>
+    <h4>Typical workflow</h4>
+    <ul>
+      <li><b>Onboard an agent:</b> Agents page → issue a <b>join key</b> → hand it to the new box → it appears as <i>observer</i> → set its role in the table.</li>
+      <li><b>Give work:</b> create a task (Tasks page or a project) and <b>assign it</b> to a worker. Workers only pull what's assigned to them.</li>
+      <li><b>Watch it happen:</b> Dashboard shows live counts + who's working what; Events is the audit log.</li>
+      <li><b>Review:</b> when a task is done, a qa/reviewer approves or rejects it from the task page.</li>
+    </ul>
+    <h4>Keys &amp; security</h4>
+    <p>Each agent has one <code>mesh_…</code> API key (shown once at creation). <b>Rekey</b> issues a
+    new one and kills the old instantly (use if a key leaks). The <b>admin token</b> unlocks this
+    console; the <b>join key</b> lets new boxes enroll (issuing a new one invalidates the old).</p>
+    <h4>Live updates</h4>
+    <p>Pages auto-refresh every ~5s. Your typed form text is preserved across refreshes.</p>
+  </div>`;
+  document.body.appendChild(el);
+  el.addEventListener("click",e=>{if(e.target===el)el.remove()});
+}
 
 /* ---------------- lock screen ---------------- */
 function renderLock(){
@@ -1615,6 +1685,7 @@ function shell(active,title,inner){
       <button class="${active==='artifacts'?'active':''}" onclick="go('#/artifacts')">Artifacts</button>
     </nav>
     <div style="display:flex;align-items:center;gap:10px">
+      <button class="helplink" onclick="openHelp()">? Help</button>
       <span class="ev" id="whoami"></span>
       <button class="sm" onclick="logout()">lock</button>
     </div>
@@ -1686,10 +1757,9 @@ function refreshData(){
   else if(m=h.match(/^#\/project\/([^/]+)$/)){
     const pid=decodeURIComponent(m[1]);
     const p=(CACHE.projects||[]).find(x=>x.id===pid);
-    if(p&&$("#ptasktable")){
+    if(p&&$("#ptaskbody")){
       const items=p.task_items||CACHE.tasks.filter(t=>t.project_id===pid);
-      $("#ptasktable").innerHTML=`<tr><th>title</th><th>status</th><th>assignee</th><th>prio</th></tr>`+
-        (items.map(t=>`<tr class="clickable" onclick="go('#/task/${t.id}')"><td>${esc(t.title)}</td><td>${statusPill(t.status)}</td><td class="mono">${esc(t.assigned_to||"—")}</td><td>${t.priority}</td></tr>`).join("")||'<tr><td colspan=4 class="empty">no tasks</td></tr>');
+      $("#ptaskbody").innerHTML=(items.map(t=>`<tr class="clickable" onclick="go('#/task/${t.id}')"><td>${esc(t.title)}</td><td>${statusPill(t.status)}</td><td class="mono">${esc(t.assigned_to||"—")}</td><td>${t.priority}</td></tr>`).join("")||'<tr><td colspan=4 class="empty">no tasks</td></tr>');
       const th=$("#ptaskcount");if(th)th.textContent=`Tasks (${items.length})`;
     }
   }
@@ -1729,6 +1799,9 @@ function pageDash(){
   const done=(S.tasks_by_status?.done||0)+(S.tasks_by_status?.approved||0);
   const recent=T.slice(0,6);
   return shell("dash","Dashboard",`
+   <div class="intro">Live view of the swarm. <b>Queued</b> = waiting to be assigned, <b>active</b> = claimed or in progress,
+    <b>done/approved</b> = finished (and accepted), <b>failed</b> = needs a look. Click any recent task to see its detail and act on it.
+    New here? Hit <b>? Help</b> top-right for the full walkthrough.</div>
    <div id="dashstats" class="stats">
     <div><div class="stat">${S.tasks_by_status?.queued||0}</div><div class="statlabel">queued</div></div>
     <div><div class="stat">${active}</div><div class="statlabel">active</div></div>
@@ -1754,32 +1827,35 @@ function evLine(e){return `<div class="ev"><b>${ago(e.ts)}</b> · <b>${esc(e.act
 function pageAgents(){
   const A=CACHE.agents||[];
   return shell("agents","Agents & keys",`
+   <div class="intro">Every agent in the swarm and its API key. <b>Onboard a new box:</b> issue a join key, hand it to the box,
+    it shows up as <i>observer</i>, then set its role in the table. Or register an agent directly below.
+    ${tip("A worker only executes tasks assigned to it. A qa/reviewer can approve finished work. An orchestrator/planner creates & assigns tasks. Observer is read-only.")} Roles control what each agent may do.</div>
    <div class="card" style="margin-bottom:16px">
-     <h2>Join key (for new agents)</h2>
+     <h2>Join key (for new agents)${tip("New boxes run ./install.sh guest with this key + your base URL. They enroll as 'observer'. Issuing a new key invalidates the old one — so rotate after onboarding batches.")}</h2>
      <div class="row">
-       <span class="ev" style="flex:1">New boxes present this key to <span class="mono">/api/agents/join</span> (they land as <b>observer</b>; assign a role below). Issuing a new one invalidates the old.</span>
+       <span class="ev" style="flex:1">Hand this to a new box so it can join the swarm. It lands as <b>observer</b> — assign a real role in the table below once it appears.</span>
        <button class="primary" onclick="issueJoinKey()">Issue / rotate join key</button>
      </div>
    </div>
    <div class="card">
-     <h2>Register an agent directly</h2>
+     <h2>Register an agent directly${tip("Creates an agent right now and shows its API key ONCE. Use this for agents you're setting up by hand; use the join key for remote boxes that self-enroll.")}</h2>
      <div class="row">
        <input id="na" class="grow" placeholder="new agent name">
        <select id="nr" style="width:auto">${roleOpts("worker")}</select>
-       <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mut)"><input type="checkbox" id="ncap" style="width:auto"> admin cap</label>
+       <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mut)" title="Lets this agent's key open the full admin console (as itself)."><input type="checkbox" id="ncap" style="width:auto"> admin cap</label>
        <button class="primary" onclick="regAgent()">Register</button>
      </div>
-     <table><tr><th>name</th><th>role</th><th>status</th><th>seen</th><th>key</th><th>console</th><th>actions</th></tr>
+     <table><tr><th>name</th><th>role${tip("Change anytime. Takes effect immediately — e.g. promote a new observer to worker so it can start pulling assigned tasks.")}</th><th>status${tip("online = checked in within the last 90s. offline = no recent heartbeat (agent down or not running its worker loop).")}</th><th>seen</th><th>key${tip("The agent's API key prefix. The full key is shown only once at creation; 'rekey' issues a fresh one (old dies instantly).")}</th><th>console${tip("Grant/remove the admin capability so this agent's key can open the full console.")}</th><th>actions</th></tr>
      <tbody id="agentrows">${A.map(a=>{const hasAdmin=(a.caps||[]).includes("admin");return `<tr>
        <td>${esc(a.name)}<div class="ev mono">${esc(a.id)}</div></td>
        <td><select onchange="setRole('${esc(a.id)}',this.value)" style="width:auto">${roleOpts(a.role)}</select></td>
        <td>${agentPill(a.status)}</td><td>${ago(a.last_seen)}</td>
        <td class="mono key">${esc(a.key_prefix||"—")}${a.has_key?"":" ⚠ no-key"}</td>
-       <td><button class="sm ${hasAdmin?'primary':''}" onclick="toggleAdminCap('${esc(a.id)}',${!hasAdmin})">${hasAdmin?'admin ✓':'grant'}</button></td>
-       <td style="white-space:nowrap"><button class="sm" onclick="issueKey('${esc(a.id)}')">rekey</button>
-           <button class="sm danger" onclick="revokeKey('${esc(a.id)}')">revoke</button>
-           <button class="sm danger" onclick="delAgent('${esc(a.id)}')">delete</button></td>
-     </tr>`}).join("")||'<tr><td colspan=7 class="empty">no agents registered</td></tr>'}</tbody>
+       <td><button class="sm ${hasAdmin?'primary':''}" onclick="toggleAdminCap('${esc(a.id)}',${!hasAdmin})" title="Toggle the admin capability for this agent's key">${hasAdmin?'admin ✓':'grant'}</button></td>
+       <td style="white-space:nowrap"><button class="sm" onclick="issueKey('${esc(a.id)}')" title="Issue a new API key; the old one stops working immediately">rekey</button>
+           <button class="sm danger" onclick="revokeKey('${esc(a.id)}')" title="Revoke this agent's key (it can no longer authenticate)">revoke</button>
+           <button class="sm danger" onclick="delAgent('${esc(a.id)}')" title="Remove the agent entirely (and its key)">delete</button></td>
+     </tr>`}).join("")||'<tr><td colspan=7 class="empty">no agents registered yet — issue a join key above or register one below</td></tr>'}</tbody>
      </table>
    </div>`);
 }
@@ -1788,11 +1864,14 @@ function projStatusPill(s){const m={active:"s-claimed",paused:"s-cancelled",done
 function pageProjects(){
   const P=CACHE.projects||[];
   return shell("projects","Projects",`
+   <div class="intro">A project groups related tasks (e.g. one feature or app) and carries shared context like the repo to work in.
+    Create a project, open it, and add tasks — then assign those tasks to workers from inside the project.
+    ${tip("Context is free-form JSON shown to agents working the project's tasks — put the repo path, branch, or any shared facts here.")}</div>
    <div class="card" style="margin-bottom:16px">
-     <h2>New project</h2>
+     <h2>New project${tip("Groups tasks under one name + shared context. You'll add and assign tasks from inside the project page.")}</h2>
      <div class="row">
        <input id="pjname" class="grow" placeholder="project name">
-       <input id="pjctx" class="grow" placeholder='context JSON e.g. {"repo":"~/Work/x"}'>
+       <input id="pjctx" class="grow" placeholder='context JSON e.g. {"repo":"~/Work/x"}' title='Optional shared context for this project, as JSON. Shown to agents working its tasks.'>
        <button class="primary" onclick="createProject()">Create</button>
      </div>
    </div>
@@ -1848,8 +1927,8 @@ async function pageProject(id){
          <input id="ptprio" type="number" min="0" max="5" value="3" style="width:56px">
          <button class="sm primary" onclick="addTaskToProject('${esc(p.id)}')">add</button>
        </div>
-       <table id="ptasktable"><tr><th>title</th><th>status</th><th>assignee</th><th>prio</th></tr>
-       ${items.map(t=>`<tr class="clickable" onclick="go('#/task/${t.id}')"><td>${esc(t.title)}</td><td>${statusPill(t.status)}</td><td class="mono">${esc(t.assigned_to||"—")}</td><td>${t.priority}</td></tr>`).join("")||'<tr><td colspan=4 class="empty">no tasks</td></tr>'}
+       <table id="ptasktable"><thead><tr><th>title</th><th>status</th><th>assignee</th><th>prio</th></tr></thead>
+       <tbody id="ptaskbody">${items.map(t=>`<tr class="clickable" onclick="go('#/task/${t.id}')"><td>${esc(t.title)}</td><td>${statusPill(t.status)}</td><td class="mono">${esc(t.assigned_to||"—")}</td><td>${t.priority}</td></tr>`).join("")||'<tr><td colspan=4 class="empty">no tasks</td></tr>'}</tbody>
        </table>
      </div>
    </div>`);
@@ -1858,12 +1937,15 @@ async function pageProject(id){
 function pageTasks(){
   const T=CACHE.tasks||[];
   return shell("tasks","Task board",`
+   <div class="intro">All work in the swarm. Create a task here, then <b>assign it to a worker</b> (open the task → set assignee) —
+    workers only pull tasks assigned to them, so an unassigned task just sits in <i>queued</i>.
+    Click any row for detail, actions (start/cancel/requeue), and review.</div>
    <div class="card">
      <div class="row">
        <input id="tt" class="grow" placeholder="task title">
-       <select id="tk" style="width:auto">${kindOpts("code")}</select>
+       <select id="tk" style="width:auto" title="What kind of work: code, research, docs, ops, test, or generic">${kindOpts("code")}</select>
        <input id="tp" type="number" min="0" max="5" value="3" style="width:64px" title="priority 0-5 (lower = more urgent)">
-       <button class="primary" onclick="mkTask()">Create task</button>
+       <button class="primary" onclick="mkTask()" title="Creates a queued task. Assign it to a worker from its detail page so someone will pick it up.">Create task</button>
      </div>
      <div class="filters">
        <select id="tf" onchange="renderTaskFilter()" style="width:auto">
@@ -1872,8 +1954,8 @@ function pageTasks(){
        </select>
        <span class="ev" id="tcount"></span>
      </div>
-     <table id="tasktable"><tr><th>title</th><th>kind</th><th>status</th><th>assignee</th><th>prio</th><th>created</th><th>updated</th></tr>
-     ${taskRows(T)}
+     <table id="tasktable"><thead><tr><th>title</th><th>kind</th><th>status</th><th>assignee</th><th>prio</th><th>created</th><th>updated</th></tr></thead>
+     <tbody id="taskbody">${taskRows(T)}</tbody>
      </table>
    </div>`);
 }
@@ -1888,13 +1970,13 @@ function taskRows(T){
      <td>${ago(t.created_at)}</td><td>${ago(t.updated_at)}</td></tr>`).join("")
      ||'<tr><td colspan=7 class="empty">no tasks match</td></tr>';
 }
+// Targeted refresh: update ONLY the #taskbody rows (and the count), never the
+// header or the filter select. This is what stops the table from collapsing /
+// losing formatting on every 5s auto-refresh.
 function renderTaskFilter(){
-  const body=$("#tasktable").querySelectorAll("tr").length; // noop guard
-  // re-render just the rows
-  const tbl=$("#tasktable");
-  const head=tbl.querySelector("tr");
-  tbl.innerHTML="";tbl.appendChild(head);
-  tmpDiv(taskRows(CACHE.tasks||[])).childNodes.forEach(n=>tbl.appendChild(n));
+  const body=$("#taskbody");
+  if(!body)return;
+  body.innerHTML=taskRows(CACHE.tasks||[]);
 }
 function tmpDiv(html){const d=document.createElement("div");d.innerHTML=html;return d}
 
@@ -1923,19 +2005,19 @@ async function pageTask(id){
        <pre>${esc(JSON.stringify(t.spec||{},null,1))}</pre>
        ${t.result?`<h2 style="margin-top:16px">Result</h2><pre>${esc(JSON.stringify(t.result,null,1))}</pre>`:""}
      </div>
-     <div class="card"><h2>Actions</h2>
+     <div class="card"><h2>Actions${tip("These act on the task's state. Start moves it to in_progress; Cancel stops it; Requeue puts a failed/cancelled task back to queued so it can be tried again.")}</h2>
        <div class="row">
-         ${t.status==="queued"||t.status==="claimed"?`<button class="primary" onclick="taskAct('${t.id}','start')">Start</button>`:""}
-         ${["queued","claimed","in_progress"].includes(t.status)?`<button class="danger" onclick="taskAct('${t.id}','cancel')">Cancel</button>`:""}
-         ${["failed","cancelled","rejected"].includes(t.status)?`<button onclick="taskAct('${t.id}','requeue')">Requeue</button>`:""}
+         ${t.status==="queued"||t.status==="claimed"?`<button class="primary" onclick="taskAct('${t.id}','start')" title="Mark this task as actively being worked (in_progress)">Start</button>`:""}
+         ${["queued","claimed","in_progress"].includes(t.status)?`<button class="danger" onclick="taskAct('${t.id}','cancel')" title="Stop this task; it won't be worked further">Cancel</button>`:""}
+         ${["failed","cancelled","rejected"].includes(t.status)?`<button onclick="taskAct('${t.id}','requeue')" title="Put this task back to queued so it can be attempted again">Requeue</button>`:""}
        </div>
-       ${canReview?`<h2 style="margin-top:8px">Review</h2>
+       ${canReview?`<h2 style="margin-top:8px">Review${tip("Only a qa/reviewer/orchestrator can approve or reject. Approve accepts the finished work; Reject sends it back (use the note to say why).")}</h2>
          <div class="row">
-           <button class="primary" onclick="taskReview('${t.id}','approved')">Approve</button>
-           <button class="danger" onclick="taskReview('${t.id}','rejected')">Reject</button>
-           <input id="rnote" class="grow" placeholder="note (optional)">
-         </div>`:`<div class="ev">Review available when task is done or failed.</div>`}
-       <h2 style="margin-top:16px">Artifacts (${arts.length})</h2>
+           <button class="primary" onclick="taskReview('${t.id}','approved')" title="Accept this finished task as done well">Approve</button>
+           <button class="danger" onclick="taskReview('${t.id}','rejected')" title="Send this task back — it didn't meet the bar">Reject</button>
+           <input id="rnote" class="grow" placeholder="note (optional)" title="Optional note recorded with your review decision">
+         </div>`:`<div class="ev">Review becomes available once the task is <b>done</b> or <b>failed</b>.</div>`}
+       <h2 style="margin-top:16px">Artifacts (${arts.length})${tip("Files the agent uploaded as results (builds, reports, etc.). Click download to grab them.")}</h2>
        ${arts.length?`<table><tr><th>name</th><th>size</th><th>sha256</th><th></th></tr>
          ${arts.map(aid=>artRow(aid)).join("")}</table>`:'<div class="empty">none uploaded</div>'}
      </div>
@@ -1956,6 +2038,8 @@ function fmtSize(n){if(n<1024)return n+" B";if(n<1048576)return (n/1024).toFixed
 function pageEvents(){
   const E=CACHE.events||[];
   return shell("events","Event audit log",`
+   <div class="intro">A running record of everything that happened — who did what, when. Useful for tracing a task's history or debugging why something is in a given state.
+    Filter by actor (who), type (what kind of event), or task id.</div>
    <div class="card">
      <div class="filters">
        <select id="ef-actor" onchange="reloadEvents()" style="width:auto"><option value="">all actors</option>${[...new Set(E.map(e=>e.actor).filter(Boolean))].map(a=>`<option>${esc(a)}</option>`).join("")}</select>
@@ -1975,6 +2059,7 @@ async function reloadEvents(){
 
 function pageArtifacts(){
   $("#app").innerHTML = shell("artifacts","Artifacts",`
+   <div class="intro">Files agents uploaded as task results — builds, reports, datasets, etc. Each is tied to the task that produced it. Click <b>download</b> to grab one.</div>
    <div class="card" id="artcard"><div class="empty">loading…</div></div>`);
   // fill async (must run AFTER the shell is in the DOM)
   (async()=>{try{const d=await api("/api/artifacts");CACHE.artifacts=d.items;
