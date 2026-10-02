@@ -1824,6 +1824,17 @@ function openHelp(){
       <li><b>Watch it happen:</b> Dashboard shows live counts + who's working what; Events is the audit log.</li>
       <li><b>Review:</b> when a task is done, a qa/reviewer approves or rejects it from the task page.</li>
     </ul>
+    <h4>What the buttons do</h4>
+    <p>Hover any <span class="tip" tabindex="0">?</span> marker on a page for an inline explanation. The common ones:</p>
+    <ul>
+      <li><b>Projects — open →</b>: go to that project's page to view its tasks, add new ones, and assign them to workers.</li>
+      <li><b>Projects — mark done / cancel</b>: change the project's status (finished / abandoned). Both keep the record; neither deletes anything.</li>
+      <li><b>Projects — delete</b> (admin): permanently remove the project, all its tasks, and their files. Use to prune finished projects.</li>
+      <li><b>Task — Start / Cancel / Requeue</b>: move the task through its lifecycle (in_progress / stop / back to queued).</li>
+      <li><b>Task — Delete</b> (admin): permanently remove the task + its artifacts. Cancel/Requeue are safer if you just want to stop work but keep history.</li>
+      <li><b>Task — Approve / Reject</b> (qa/reviewer/orchestrator): accept or send back finished work. The admin token alone can't do this.</li>
+      <li><b>Agents — rekey / revoke / delete</b>: rotate the API key / disable the agent / remove it entirely.</li>
+    </ul>
     <h4>Keys &amp; security</h4>
     <p>Each agent has one <code>mesh_…</code> API key (shown once at creation). <b>Rekey</b> issues a
     new one and kills the old instantly (use if a key leaks). The <b>admin token</b> unlocks this
@@ -1941,11 +1952,11 @@ function refreshData(){
             <div><div class="stat" style="font-size:18px">${(t.done||0)+(t.approved||0)}</div><div class="statlabel">done</div></div>
             <div><div class="stat" style="font-size:18px">${(t.failed||0)+(t.rejected||0)}</div><div class="statlabel">failed</div></div>
           </div>
-          <div style="display:flex;gap:8px">
-            <button class="sm primary" onclick="go('#/project/${esc(p.id)}')">open →</button>
-            <button class="sm" onclick="closeProject('${esc(p.id)}','done')">mark done</button>
-            <button class="sm danger" onclick="closeProject('${esc(p.id)}','cancelled')">cancel</button>
-            ${ADMIN?`<button class="sm danger" onclick="delProject('${esc(p.id)}')" title="Permanently delete this project, all its tasks, and their artifacts (admin only). Cannot be undone.">delete</button>`:""}
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="sm primary" onclick="go('#/project/${esc(p.id)}')" title="Open this project's page to view its tasks, add new ones, and assign them to workers.">open →${tip("Go to this project's detail page: see all its tasks, add new tasks, and assign them to specific workers.")}</button>
+            <button class="sm" onclick="closeProject('${esc(p.id)}','done')" title="Mark the project as finished (status → done). Keeps the record; doesn't delete anything.">mark done${tip("Set the project status to 'done' — use it when the work is complete. This only changes the status; the project and its tasks stay for reference.")}</button>
+            <button class="sm danger" onclick="closeProject('${esc(p.id)}','cancelled')" title="Abandon this project (status → cancelled). Keeps the record.">cancel${tip("Set the project status to 'cancelled' — use it to abandon work that won't happen. Status change only; nothing is deleted.")}</button>
+            ${ADMIN?`<button class="sm danger" onclick="delProject('${esc(p.id)}')" title="Permanently delete this project, all its tasks, and their artifacts (admin only). Cannot be undone.">delete${tip("PERMANENTLY remove this project, every task in it, and their uploaded files. Admin only, cannot be undone. Use to prune finished projects — 'cancel' is safer if you just want to stop the work but keep the record.")}`:""}
           </div>
         </div>`}).join("")||'<div class="card"><div class="empty">no projects yet</div></div>');
   }
@@ -2062,6 +2073,14 @@ function pageProjects(){
    <div class="intro">A project groups related tasks (e.g. one feature or app) and carries shared context like the repo to work in.
     Create a project, open it, and add tasks — then assign those tasks to workers from inside the project.
     ${tip("Context is free-form JSON shown to agents working the project's tasks — put the repo path, branch, or any shared facts here.")}</div>
+   <div class="intro" style="margin-top:8px;background:#f7f7f9;border-color:#e3e3e8">
+    <b>Project card buttons:</b>
+    <b>open →</b> go to the project's page to view/add/assign its tasks ·
+    <b>mark done</b> set status to <i>done</i> (work finished; keeps the record) ·
+    <b>cancel</b> set status to <i>cancelled</i> (abandon; keeps the record) ·
+    <b>delete</b> (admin) permanently remove the project + all its tasks + files — use to prune finished projects.
+    ${tip("'mark done' and 'cancel' only change the status — they keep everything for reference. 'delete' is the only one that removes data, and it's admin-only.")}
+   </div>
    <div class="card" style="margin-bottom:16px">
      <h2>New project${tip("Groups tasks under one name + shared context. You'll add and assign tasks from inside the project page.")}</h2>
      <div class="row">
@@ -2084,11 +2103,11 @@ function pageProjects(){
             <div><div class="stat" style="font-size:18px">${(t.done||0)+(t.approved||0)}</div><div class="statlabel">done</div></div>
             <div><div class="stat" style="font-size:18px">${(t.failed||0)+(t.rejected||0)}</div><div class="statlabel">failed</div></div>
           </div>
-          <div style="display:flex;gap:8px">
-            <button class="sm primary" onclick="go('#/project/${esc(p.id)}')">open →</button>
-            <button class="sm" onclick="closeProject('${esc(p.id)}','done')">mark done</button>
-            <button class="sm danger" onclick="closeProject('${esc(p.id)}','cancelled')">cancel</button>
-            ${ADMIN?`<button class="sm danger" onclick="delProject('${esc(p.id)}')" title="Permanently delete this project, all its tasks, and their artifacts (admin only). Cannot be undone.">delete</button>`:""}
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="sm primary" onclick="go('#/project/${esc(p.id)}')" title="Open this project's page to view its tasks, add new ones, and assign them to workers.">open →${tip("Go to this project's detail page: see all its tasks, add new tasks, and assign them to specific workers.")}</button>
+            <button class="sm" onclick="closeProject('${esc(p.id)}','done')" title="Mark the project as finished (status → done). Keeps the record; doesn't delete anything.">mark done${tip("Set the project status to 'done' — use it when the work is complete. This only changes the status; the project and its tasks stay for reference.")}</button>
+            <button class="sm danger" onclick="closeProject('${esc(p.id)}','cancelled')" title="Abandon this project (status → cancelled). Keeps the record.">cancel${tip("Set the project status to 'cancelled' — use it to abandon work that won't happen. Status change only; nothing is deleted.")}</button>
+            ${ADMIN?`<button class="sm danger" onclick="delProject('${esc(p.id)}')" title="Permanently delete this project, all its tasks, and their artifacts (admin only). Cannot be undone.">delete${tip("PERMANENTLY remove this project, every task in it, and their uploaded files. Admin only, cannot be undone. Use to prune finished projects — 'cancel' is safer if you just want to stop the work but keep the record.")}`:""}
           </div>
         </div>`}).join("")||'<div class="card"><div class="empty">no projects yet</div></div>'}
    </div>`);
@@ -2203,10 +2222,10 @@ async function pageTask(id){
      </div>
      <div class="card"><h2>Actions${tip("These act on the task's state. Start moves it to in_progress; Cancel stops it; Requeue puts a failed/cancelled task back to queued so it can be tried again.")}</h2>
        <div class="row">
-         ${t.status==="queued"||t.status==="claimed"?`<button class="primary" onclick="taskAct('${t.id}','start')" title="Mark this task as actively being worked (in_progress)">Start</button>`:""}
-         ${["queued","claimed","in_progress"].includes(t.status)?`<button class="danger" onclick="taskAct('${t.id}','cancel')" title="Stop this task; it won't be worked further">Cancel</button>`:""}
-         ${["failed","cancelled","rejected"].includes(t.status)?`<button onclick="taskAct('${t.id}','requeue')" title="Put this task back to queued so it can be attempted again">Requeue</button>`:""}
-         ${ADMIN?`<button class="danger" onclick="delTask('${t.id}')" title="Permanently delete this task and its artifacts (admin only). This cannot be undone — Cancel/Requeue are safer for stopping work.">Delete</button>`:""}
+         ${t.status==="queued"||t.status==="claimed"?`<button class="primary" onclick="taskAct('${t.id}','start')" title="Mark this task as actively being worked (in_progress)">Start${tip("Move the task to in_progress — signals work has begun. Only the assigned agent (or orchestrator) can do this.")}`:""}
+         ${["queued","claimed","in_progress"].includes(t.status)?`<button class="danger" onclick="taskAct('${t.id}','cancel')" title="Stop this task; it won't be worked further">Cancel${tip("Stop this task — it won't be worked further. The record stays (use Delete to remove it).")}`:""}
+         ${["failed","cancelled","rejected"].includes(t.status)?`<button onclick="taskAct('${t.id}','requeue')" title="Put this task back to queued so it can be attempted again">Requeue${tip("Put a failed/cancelled/rejected task back to queued so a worker can try it again.")}`:""}
+         ${ADMIN?`<button class="danger" onclick="delTask('${t.id}')" title="Permanently delete this task and its artifacts (admin only). This cannot be undone — Cancel/Requeue are safer for stopping work.">Delete${tip("PERMANENTLY remove this task and its uploaded files. Admin only, cannot be undone. Cancel/Requeue are safer if you just want to stop work but keep history.")}`:""}
        </div>
        ${canReview?`<h2 style="margin-top:8px">Review${tip("Only a qa/reviewer/orchestrator can approve or reject. Approve accepts the finished work; Reject sends it back (use the note to say why).")}</h2>
          <div class="row">
