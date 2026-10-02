@@ -151,7 +151,8 @@ Threat notes (be honest about scope):
 ## 4. Using it — the web console
 
 Open **`http://127.0.0.1:4850/`**. It's a multi-page app with a top nav bar:
-**Dashboard · Agents · Tasks · Events · Artifacts** (hash-routed, no build step).
+**Dashboard · Projects · Agents · Tasks · Events · Artifacts** (hash-routed, no
+build step). It updates **instantly** via Server-Sent Events (5s poll fallback).
 
 1. **Unlock** — two ways:
    - **Admin token** (human operator): top-privilege viewer; can manage keys and
@@ -160,7 +161,7 @@ Open **`http://127.0.0.1:4850/`**. It's a multi-page app with a top nav bar:
      agent*, so its role still gates actions — a QA agent unlocked this way can
      approve/review from the UI. ("lock" button re-locks.)
 2. **Dashboard** — stat tiles (queued / active / done / failed / agents by
-   role), recent tasks, and a live event feed. Auto-refreshes every 5s.
+   role), recent tasks, and a live event feed (updates instantly via SSE).
 3. **Agents** — register (name + role + optional *admin cap* → one-time key
    prompt), change role via the row dropdown, grant/revoke the **admin cap**
    (console access) per agent, rekey / revoke / delete.
@@ -324,13 +325,19 @@ fresh admin token is printed.
 
 ---
 
-## 9. Roadmap / non-goals (v0.1)
+## 9. Roadmap / non-goals
 
 Deliberately out of scope for now (add when needed):
-- WebSocket/SSE push (polling is fine at this scale).
 - Multi-tenant isolation (one org per instance).
 - Built-in TLS (terminate upstream if exposing).
-- LLM logic — this is pure coordination plumbing.
+- Rate limiting / brute-force lockout (trusted-org scope; see ADMIN.md §7).
+- LLM logic in the server — this is pure coordination plumbing. (The autonomous
+  orchestrator watchdog is a Hermes cron job that *drives* this API; the LLM
+  lives outside the server.)
+
+Already shipped: SSE instant console updates, A2A peer messaging, projects,
+swarm-view + reassign, `--base-path` proxy mounting, platform-agnostic
+portability. See SCHEMA.md for the full contract.
 
 Natural next steps once the VPS orchestrator lands: run the server on the VPS,
 expose it over tailscale, register each box's agent as a worker, and point the

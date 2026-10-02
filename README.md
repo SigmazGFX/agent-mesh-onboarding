@@ -1,43 +1,46 @@
 # agent-mesh
 
-API-based communications endpoint for a multi-agent development org. Agents
-**check in, get work, report status, upload results**. Role hierarchy
-(orchestrator / planner / worker / qa / reviewer / observer) is defined per
-agent and enforced server-side. Per-agent API keys are managed through a web
-console.
+**A portable work channel for a swarm of agents.** One small Python server that
+lets agents **check in, get assigned work, report status, and upload results**,
+with a role hierarchy (orchestrator / planner / worker / qa / reviewer /
+observer) enforced server-side. A human governs it from a web console; an
+orchestrator (human or agent) dispatches work; workers execute it.
 
-**Platform-agnostic.** Plain HTTP + JSON with Bearer auth — no SDK, no framework
-dependency. The core (`mesh_server.py`, `mesh` CLI, `MeshClient`) is pure Python
-stdlib (≥3.9), so it runs on any box and any agent platform can join: Hermes,
-Claude Code, Codex, OpenCode, a custom LLM loop, or a plain script. See
-[`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) for runtime-agnostic patterns.
+**Clone it, run one command, and you have a swarm endpoint.** No venv, no pip,
+no build step — pure Python ≥3.9 standard library. Any agent platform can join:
+Hermes, Claude Code, Codex, OpenCode, a custom LLM loop, or a plain script. It
+talks plain HTTP + JSON with Bearer auth — there is no SDK to adopt.
 
-- **Spec (source of truth):** [`SCHEMA.md`](SCHEMA.md) — read this first.
-- **Server:** [`mesh_server.py`](mesh_server.py) — single file, stdlib-only
-  (Python ≥3.9). No venv, no pip. Portable: copy to any box and run.
-- **Web console:** `http://127.0.0.1:4850/` — multi-page admin dashboard + key
-  management (Dashboard · Projects · Agents · Tasks · Events · Artifacts).
+```
+   YOU ─▶ master node  ──▶  mesh_server.py  (one file, stdlib only)
+                              │  • web console  (govern roles, keys, tasks)
+                              │  • REST API     (checkin / pull / result / upload)
+                              │  • durable state (SQLite WAL + artifacts)
+                              └──▶ guest nodes (workers / qa / …) poll & report
+```
 
-## Docs
+---
 
-| File | What it's for |
-|---|---|
-| [`ADMIN.md`](ADMIN.md) | **Administrator's manual** — tokens, console, roles, join keys, security, recovery. Read this if you run/govern a swarm. |
-| [`ORCHESTRATOR.md`](ORCHESTRATOR.md) | The orchestrator brain — per-project subagent lifecycle, intake → plan → delegate → track, member spawning, active swarm management (swarm-view, stale-task reassignment). |
-| [`SCHEMA.md`](SCHEMA.md) | The API contract — every endpoint, shape, role, data model (projects, A2A messaging, swarm-view, reassign). |
-| [`OPERATIONS.md`](OPERATIONS.md) | Deploy, runbook, security, troubleshooting (this box + generic). |
-| [`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) | How an agent uses it — **platform-agnostic** worker loop, presence, client, raw-HTTP examples for any runtime. |
-| [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) | Running it behind a reverse proxy on a shared host (e.g. bytemecarl.io). |
-| [`hermes-plugin/README.md`](hermes-plugin/README.md) | **Hermes dashboard control panel** — native tab in the web portal/desktop showing live swarm status. Install for any Hermes box. |
+## The 60-second tour
 
-Code beyond the server: `mesh` (agent CLI, incl. `worker` daemon),
-`agent_worker.py` (LLM-driven claim→work→report helper for any agent platform),
-`mesh_orchestrator.py` (orchestrator toolset/CLI), `install.sh` (master/guest).
+| You are… | Do this | Read next |
+|---|---|---|
+| **Setting up a swarm** (master) | `./install.sh master` | [ADMIN.md](ADMIN.md) |
+| **Joining an existing swarm** (guest) | `./install.sh guest` | [AGENT-INTEGRATION.md](AGENT-INTEGRATION.md) |
+| **An agent** being onboarded | get your `mesh_…` key, run the worker loop | [AGENT-INTEGRATION.md](AGENT-INTEGRATION.md) |
+| **Dispatching work** (orchestrator) | create project → add tasks → assign → track | [ORCHESTRATOR.md](ORCHESTRATOR.md) |
+| **Integrating a non-Python runtime** | raw-HTTP examples below + SCHEMA | [SCHEMA.md](SCHEMA.md) |
+| **Deploying behind a proxy** (shared domain) | `--base-path /agent-mesh` | [REMOTE-DEPLOY.md](REMOTE-DEPLOY.md) |
 
-## Install (master or guest)
+Everything else in this repo is detail. Start with the row that matches you.
 
-Pointing at this repo and running the installer is enough. It asks whether this
-box is a **master** (orchestrator) or a **guest** that enrolls in a swarm:
+---
+
+## Install
+
+Pointing at this repo and running the installer is the whole setup. It asks
+whether this box is a **master** (runs the orchestrator) or a **guest** (enrolls
+in an existing swarm):
 
 ```bash
 git clone https://github.com/SigmazGFX/agent-mesh.git
@@ -48,11 +51,26 @@ cd agent-mesh
 ./install.sh guest           # enroll THIS box into an existing swarm
 ```
 
-**Master mode** runs the endpoint locally as a systemd user service, stores the
-admin token, prints the console URL + admin token, and issues a **join key** to
-hand out to guests.
+### Master mode (the first box)
+Runs the endpoint as a systemd **user** service (or a background process where
+systemd isn't available — containers/macOS), stores the admin token, prints the
+console URL + admin token, and issues a **join key** to hand out to guests.
 
-**Guest mode** asks for the swarm's **base URL** and a **join key**, then:
+```
+Console     : http://127.0.0.1:4850/   (unlock with the admin token)
+Admin token : adm_XXXXXXXXXXXX
+Join key for guests (hand this out):
+------------------------------------
+join_YYYYYYYYYY
+------------------------------------
+```
+
+**Capture both secrets now.** The admin token isn't shown again by the server
+(it *is* saved to `~/.local/state/agent-mesh/admin_token`, mode 600); the join
+key can be re-issued anytime (which invalidates the old one).
+
+### Guest mode (joining a swarm)
+Asks for the swarm's **base URL** and a **join key**, then:
 1. Enrolls via `POST /api/agents/join` (presents the join key; lands as
    `observer`).
 2. Stores `{base_url, api_key, agent_id}` in `~/.config/agent-mesh/config.json`.
@@ -68,8 +86,88 @@ mesh peers         # who's in the swarm + who's online
 mesh worker        # run the poll/execute/report loop (daemon)
 mesh checkin       # one-off heartbeat
 mesh pull          # claim next task (needs worker+ role)
-mesh result <id> --status ok --output '{"commit":"abc"}'
+mesh msg <agent> "text"      # message another agent (A2A over the mesh)
+mesh inbox --unread          # read your peer messages
+mesh listen                    # long-poll: print each incoming message live
 ```
+
+---
+
+## How a swarm actually works
+
+The mental model in one paragraph: **the orchestrator assigns work; workers only
+do what's assigned to them.** This is deliberate — it stops the classic failure
+where every agent grabs the whole queue and does nothing.
+
+1. **Orchestrator** creates a **project**, breaks it into **tasks**, and
+   **assigns** each task to a specific capable member (`assigned_to`).
+2. **Workers** poll `GET /api/work/pull`, which returns *only* tasks assigned to
+   them. They `start` → do the real work → `progress` → `result` (+ optional
+   artifact upload).
+3. **QA / reviewer** approve or reject finished work.
+4. The orchestrator **tracks** the swarm (`swarm-view`) and keeps it busy:
+   assigns unassigned work to idle agents, reassigns stale tasks, requeues
+   failures. On a Hermes master this runs as an **autonomous watchdog** (see
+   [ORCHESTRATOR.md](ORCHESTRATOR.md)).
+
+Task lifecycle:
+`queued → claimed → in_progress → done | failed | cancelled → approved | rejected`
+
+### Roles & what they may do
+
+| Role | dispatch | pull | results | review | cancel others |
+|---|---|---|---|---|---|
+| orchestrator | ✓ | ✓ | ✓ | ✓ | ✓ |
+| planner | ✓ | ✓ | ✓ | ✓ | – |
+| worker | – | ✓ | ✓ | – | – |
+| qa | – | ✓ | ✓ | ✓ | – |
+| reviewer | – | – | – | ✓ | – |
+| observer | – | – | – | – | – |
+
+Enforced **server-side** — a worker key literally cannot dispatch or review; the
+request 403s before touching data. Change a role anytime from the console
+(Agents table → role dropdown).
+
+### Instant updates (SSE)
+The web console updates **instantly** when anything changes — no waiting for a
+poll. The server pushes a change event over Server-Sent Events
+(`GET /api/stream`); the console subscribes once and re-fetches on each ping,
+with a 5s poll as a fallback if the stream drops. No extra dependencies.
+
+---
+
+## Using it as an agent (the loop)
+
+An agent holds one `mesh_…` key and talks plain HTTP. Two ways:
+
+### Bundled client (recommended)
+`MeshClient` ships at the bottom of `mesh_server.py` — import it, no install:
+
+```python
+import sys; sys.path.insert(0, "/path/to/agent-mesh")
+from mesh_server import MeshClient
+
+mc = MeshClient("http://127.0.0.1:4850", "mesh_YOUR_KEY")
+mc.checkin(load=0.2)                       # heartbeat -> {pending_tasks}
+task = mc.pull()                           # claim next task, or None
+if task:
+    mc.start(task["id"])                   # claimed -> in_progress
+    mc.progress(task["id"], pct=50, note="halfway")
+    mc.report(task["id"], "ok", output={"commit": "abc"})
+    mc.upload(task["id"], "/path/result.tar.gz")   # optional artifact
+```
+
+### Raw curl (no SDK, any runtime)
+```bash
+KEY=***        BASE=http://127.0.0.1:4850
+curl -s $BASE/api/agents/checkin -X POST -H "Authorization: Bearer ***" -d '{}'
+curl -s $BASE/api/work/pull      -H "Authorization: Bearer ***"   # -> {"task":{...}} or null
+```
+
+For a full runtime-agnostic worker pattern (Hermes, Claude Code, Codex, a cron
+tick, or a standing daemon), see **[AGENT-INTEGRATION.md](AGENT-INTEGRATION.md)**.
+
+---
 
 ## Running it (this box)
 
@@ -84,61 +182,42 @@ systemctl --user restart agent-mesh     # after editing mesh_server.py
 - Listens on `127.0.0.1:4850` only (LAN exposure = set `MESH_HOST=0.0.0.0`,
   deliberately not done).
 - State: `~/.local/state/agent-mesh/` (SQLite WAL + artifact files).
-- Admin token: `MESH_ADMIN_TOKEN` in `~/.hermes/.env` (injected via
-  `EnvironmentFile`). It was generated at install time — read it from there;
-  it is never printed again.
+- Admin token: `~/.local/state/agent-mesh/admin_token` (mode 600); a pre-set
+  `MESH_ADMIN_TOKEN` env var takes precedence.
 
-## Onboarding an agent (3 steps)
+---
 
-1. Open `http://127.0.0.1:4850/`, unlock with the admin token.
-2. **Register** the agent: name + role (e.g. `haans` / `worker`). The UI
-   prompts you to copy the plaintext API key — shown exactly once.
-3. Give that key to the agent's config. The agent then talks plain HTTP:
+## Docs
 
-```python
-import sys; sys.path.insert(0, "/home/sigmaxgfx/Work/agent-mesh")
-from mesh_server import MeshClient
+| File | What it's for |
+|---|---|
+| [`ADMIN.md`](ADMIN.md) | **Administrator's manual** — tokens, console, roles, join keys, security, recovery. Read this if you run/govern a swarm. |
+| [`ORCHESTRATOR.md`](ORCHESTRATOR.md) | The orchestrator brain — per-project subagent lifecycle, intake → plan → delegate → track, member spawning, active swarm management (swarm-view, stale-task reassignment), and the **autonomous watchdog**. |
+| [`SCHEMA.md`](SCHEMA.md) | The API contract — every endpoint, shape, role, data model (projects, A2A messaging, swarm-view, reassign, SSE). |
+| [`OPERATIONS.md`](OPERATIONS.md) | Deploy, runbook, security, troubleshooting (this box + generic). |
+| [`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) | How an agent uses it — **platform-agnostic** worker loop, presence, A2A messaging, client, raw-HTTP examples for any runtime. |
+| [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) | Running it behind a reverse proxy on a shared host (e.g. bytemecarl.io). |
+| [`hermes-plugin/README.md`](hermes-plugin/README.md) | **Hermes dashboard control panel** — native tab in the web portal/desktop showing live swarm status. Install for any Hermes box. |
 
-mc = MeshClient("http://127.0.0.1:4850", "mesh_...")   # its key
-mc.checkin(load=0.2)                                    # heartbeat
-task = mc.pull()                                        # claim next task
-if task:
-    mc.start(task["id"])
-    mc.progress(task["id"], pct=50, note="halfway")
-    mc.report(task["id"], "ok", output={"commit": "abc"})
-    mc.upload(task["id"], "/path/to/result.tar.gz")     # optional artifact
-```
+Code beyond the server: `mesh` (agent CLI, incl. `worker` daemon),
+`agent_worker.py` (LLM-driven claim→work→report helper for any agent platform),
+`mesh_orchestrator.py` (orchestrator toolset/CLI), `install.sh` (master/guest).
 
-Or raw curl (no SDK needed):
-
-```bash
-curl -s http://127.0.0.1:4850/api/work/pull -H "Authorization: Bearer mesh_..."
-```
-
-## Roles & what they may do
-
-| Role | dispatch | pull | results | review | cancel others |
-|---|---|---|---|---|---|
-| orchestrator | ✓ | ✓ | ✓ | ✓ | ✓ |
-| planner | ✓ | ✓ | ✓ | ✓ | – |
-| worker | – | ✓ | ✓ | – | – |
-| qa | – | ✓ | ✓ | ✓ | – |
-| reviewer | – | – | – | ✓ | – |
-| observer | – | – | – | – | – |
-
-Change a role anytime from the console (Agents table → role dropdown).
+---
 
 ## Relationship to the relay
 
 This is the **work channel**; omarchy-relay A2A stays the **social/emergency**
-channel. Mapping: A2A `task.dispatch` ≈ create+pull, `task.progress` ≈
-progress, `task.result` ≈ result+upload, `hello`/`heartbeat` ≈ checkin.
-Freeform `note` chatter stays on the relay. Announce a new orchestrator URL
-over the relay; do all task flow here.
+channel. Mapping: A2A `task.dispatch` ≈ create+pull, `task.progress` ≈ progress,
+`task.result` ≈ result+upload, `hello`/`heartbeat` ≈ checkin. Freeform `note`
+chatter stays on the relay. Announce a new orchestrator URL over the relay; do
+all task flow here. (Note: agent-mesh also has its own native A2A messaging now —
+see SCHEMA.md — for coordination that shouldn't route through the master.)
 
 ## Verified
 
-29/29 end-to-end checks pass (auth, role gates, full task lifecycle,
-artifact upload/download round-trip, key rotation, audit log, web UI) plus a
-full worker loop driven purely through `MeshClient`. Test scripts kept at
-`/tmp/mesh-e2e.py`, `/tmp/mesh-loop-test.py` (recreate from SCHEMA.md if gone).
+End-to-end checks pass (auth, role gates, full task lifecycle, artifact
+upload/download round-trip, key rotation, audit log, A2A messaging, swarm-view,
+reassign, SSE push, web UI) plus a full worker loop driven purely through
+`MeshClient`. Re-test scripts are kept in `/tmp` while present; recreate from
+SCHEMA.md if gone.

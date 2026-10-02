@@ -1,6 +1,6 @@
 # agent-mesh — API-based agent org endpoint
 
-Version: 0.1 (2026-10-01)
+Version: 0.7 (2026-10-02)
 Status: contract-first — this file is the source of truth; code conforms to it.
 
 ## What it is
@@ -163,6 +163,7 @@ HTTP status (401 bad/missing key, 403 role-forbidden, 404 unknown id,
 | POST | `/api/tasks/{id}/cancel` | creator/higher | Cancel queued/in-progress task. |
 | POST | `/api/tasks/{id}/review` | qa/reviewer/orchestrator | Body: `{verdict: approved\|rejected, note?}`. |
 | POST | `/api/tasks/{id}/requeue` | orchestrator/planner | Put a failed/cancelled task back to `queued`. |
+| POST | `/api/tasks/{id}/reassign` | orchestrator/planner | Move a stuck task to another agent. Body: `{to: <agent_id>}`. Resets the task to `queued` under the new owner (`assigned_to=to`). Use when an assigned worker didn't pick up work (see `swarm-view` `stale_tasks`). CLI: `mesh_orchestrator.py reassign <task_id> <agent_id>`. |
 
 ### Projects
 A project groups related tasks (and carries shared context like repo/branch).
@@ -236,11 +237,16 @@ Protected by `Authorization: Bearer <ADMIN_TOKEN>`.
 ### Web UI
 | Route | Description |
 |---|---|
-| GET `/` | Admin dashboard (HTML). Prompts for admin token (stored in localStorage). Shows agents, live task board, events feed, key management. Auto-refreshes. |
+| GET `/` | Admin dashboard (HTML). Prompts for admin token (stored in sessionStorage). Multi-page: Dashboard · Projects · Agents · Tasks (+ per-task detail w/ inline review) · Events · Artifacts. Updates **instantly** via SSE. |
 | GET `/static/...` | Inline-served CSS/JS (no build step). |
 
 The web UI is the ONLY place keys are created/revoked visually. It calls the
 `/api/admin/*` endpoints with the admin token.
+
+### Real-time updates (SSE)
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/stream` | agent or admin (Bearer, or `?token=` since EventSource can't set headers) | Server-Sent Events. Holds the connection and pushes a `change` event whenever mesh state mutates (task/agent/event changes), plus periodic keepalive comments so proxies don't drop an idle stream. The console subscribes once and re-fetches data on each `change`; a 5s poll remains as a fallback if the stream drops. `X-Accel-Buffering: no` disables proxy buffering. One-way server→browser — the "SignalR-lite" for this stdlib stack. |
 
 ## Portability / deployment
 
@@ -289,8 +295,18 @@ An orchestrator on a VPS runs this server; workers on each box poll
 `/api/work/pull`. Relay is used to announce "new orchestrator online at
 <url>" and for anything conversational.
 
-## Non-goals (v0.1)
-- No WebSocket/SSE push (polling is fine at this scale; add later if needed).
+## Non-goals / scope notes
+
 - No multi-tenant isolation (single org per instance).
-- No TLS termination (run behind a reverse proxy / tailscale if exposing).
-- No built-in LLM logic — this is pure coordination plumbing.
+- No TLS of its own (run behind a reverse proxy / tailscale if exposing — see
+  REMOTE-DEPLOY.md).
+- No built-in LLM logic — this is pure coordination plumbing. (The autonomous
+  orchestrator watchdog, when used, is a *Hermes cron job* that drives this API;
+  the LLM lives outside the server.)
+- Deliberately simple auth (Bearer keys + one admin token). It's coordination
+  plumbing for a trusted internal org, not a hardened public SaaS — no rate
+  limiting, no brute-force lockout. See ADMIN.md §7 before exposing publicly.
+
+**Already in** (don't treat as future work): A2A peer messaging, projects,
+swarm-view + reassign (active orchestration), SSE instant console updates,
+`--base-path` reverse-proxy mounting, and platform-agnostic portability.

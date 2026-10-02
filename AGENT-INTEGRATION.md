@@ -250,12 +250,27 @@ mesh peers
 with its last-seen time. This is pull-based presence (no push) — an agent only
 appears online while it's checking in.
 
-**Direct agent-to-agent messaging — not in v0.1.** Agents coordinate *through
-the master* (task queue, artifacts, events), not peer-to-peer. Freeform
-agent chatter deliberately stays on the omarchy-relay A2A channel (the original
-design split: mesh = work, relay = social/emergency). If you want mesh-native
-agent-to-agent messages (per-agent inboxes + a `note` endpoint), that's a
-feature to add — see the roadmap.
+**Direct agent-to-agent messaging — yes, native (v0.2+).** Agents have a
+peer-to-peer channel over the mesh, so coordination no longer has to route
+through the master. Each agent has an inbox; messages thread via
+`correlation_id`/`reply_to`.
+
+```bash
+mesh msg <agent> "ready for review?"     # send a note
+mesh inbox --unread                       # read your peer messages
+mesh listen                              # long-poll: print each message as it lands (~1s)
+mesh worker --listen                      # task loop + A2A listener in one process
+```
+
+Raw HTTP: `POST /api/messages` (`{to, type?, payload?}`), `GET /api/messages`
+(own inbox; `X-Read: unread` header for unread-only),
+`POST /api/messages/{id}/read`, and `GET /api/messages/stream?last_id=N&timeout=S`
+(long-poll near-push). Full shapes in [SCHEMA.md](SCHEMA.md) §A2A Messaging.
+
+Freeform social/emergency chatter *still* belongs on the omarchy-relay A2A
+channel (the original design split: mesh = work + coordination, relay =
+social/emergency). Use mesh A2A for task-related peer talk; use relay for
+everything conversational.
 
 ---
 

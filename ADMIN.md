@@ -121,8 +121,9 @@ person). Anyone holding it has full administrative control of the swarm.
 
 ## 4. The console, page by page
 
-Unlock at the console URL. Top nav: **Dashboard · Agents · Tasks · Events ·
-Artifacts**. Auto-refreshes every 5s. A **lock** button signs out.
+Unlock at the console URL. Top nav: **Dashboard · Projects · Agents · Tasks ·
+Events · Artifacts**. Updates **instantly** via Server-Sent Events (a 5s poll
+remains as a fallback if the stream drops). A **lock** button signs out.
 
 ### Dashboard
 Stat tiles (queued / active / done / failed / agents-by-role), recent tasks, and
@@ -310,5 +311,9 @@ Config locations:
 - **Named-admin login** (username + password) as an alternative to the single
   shared bearer secret, if you want distinct admin identities.
 - Rate limiting / basic brute-force lockout on auth endpoints (if exposed).
-- WebSocket/SSE push for the console (currently 5s polling).
 - Multi-tenant isolation (one org per instance today).
+
+Already shipped (not open items): SSE instant console updates (`GET /api/stream`),
+A2A peer messaging, projects, swarm-view + reassign, `--base-path` proxy
+mounting, platform-agnostic portability, and the autonomous orchestrator
+watchdog (see ORCHESTRATOR.md).

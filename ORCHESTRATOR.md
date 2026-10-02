@@ -61,6 +61,50 @@ subagent per project keeps contexts clean.
 The main agent stays the clean admin (keys, join-keys, node health) and does NOT
 do project orchestration itself — that's the subagent's job once activated.
 
+### The autonomous watchdog (keeps the project attentive on its own)
+
+A per-project subagent is *turn-based*: once it finishes a turn it stops. Left
+alone, a long-running project would sit idle if a worker died mid-task or work
+went unassigned — nothing would notice. The **watchdog** closes that gap. It is
+a scheduled job (Hermes `cron`) that keeps an active project moving toward
+completion between human touches, then tears itself down when the project closes.
+
+How it works (cheap + idempotent):
+- A small monitor script runs **every minute**. It queries the live mesh for
+  every *active* project and reports only when something needs judgment:
+  unassigned queued tasks, stale tasks (untouched > threshold), or tasks held by
+  offline agents.
+- **Healthy → silent.** If the report is byte-identical to last tick, the LLM
+  run is suppressed entirely (cron monitor-mode hashes the output). So "every
+  minute" costs nothing on a healthy swarm.
+- **Needs attention → the orchestrator agent wakes**, runs `swarm-view`, and acts
+  with real judgment: assigns unassigned work to idle online workers, reassigns
+  stale/offline-held tasks, requeues fixable failures. No spam; doesn't close
+  projects; only touches active ones.
+
+This is what makes "when a project starts it becomes attentive and goal-driven"
+true in practice: the project spawns a watchdog that stays accountable until the
+project closes, then goes quiet again.
+
+```bash
+# Monitor script (runs each tick; empty output = healthy = no LLM cost)
+~/.hermes/scripts/mesh-watchdog-monitor.py
+
+# The cron job (monitor mode — agent runs only when output changes)
+hermes cron list | grep -A3 watchdog
+hermes cron runs --limit 5          # recent runs
+# Each fired run's reasoning + actions are logged to:
+~/.hermes/cron/output/<job_id>/<timestamp>.md   # readable audit trail
+
+# Config (orchestrator key + base url + stale threshold), mode 600:
+~/.config/agent-mesh-watchdog/config.json
+```
+
+On-demand awareness for the human/main agent: the main agent can always query the
+live mesh (`swarm-view`, tasks, projects, events) and read the watchdog's decision
+log above to answer "what's happening / what did the orchestrator do?" — no
+standing push required.
+
 ### Orchestrator subagent prompt (use verbatim)
 
 ```
