@@ -315,10 +315,27 @@ a token (and loses agents/tasks — do this deliberately).
 **Port already in use** — pick another: `MESH_PORT=4851 python3 mesh_server.py …`
 (or edit the unit). Check the squatter: `ss -ltnp | grep 4850`.
 
-**Backing up** — copy the whole state dir; it's self-contained:
+**Backing up** — the state dir is self-contained. Use the bundled script (it
+keeps the last 7 snapshots and is what `install.sh master` schedules daily):
 ```bash
-tar czf agent-mesh-backup.tgz -C ~/.local/state agent-mesh
+./mesh-backup.sh                       # snapshot now -> ~/.local/state/agent-mesh-backups/
+MESH_KEEP=14 ./mesh-backup.sh          # keep 14 instead of 7
+# restore:
+tar xzf ~/.local/state/agent-mesh-backups/agent-mesh-<ts>.tgz -C ~/.local/state
+systemctl --user restart agent-mesh
 ```
+Or a one-off manual copy: `tar czf agent-mesh-backup.tgz -C ~/.local/state agent-mesh`.
+
+> **Why backups matter:** if the state dir is ever wiped or corrupted, the data
+> is gone *unless* the server is still running (then it's recoverable from
+> `/proc/<pid>/fd`) or you have a backup. The daily cron makes that automatic.
+
+**Re-installing the master is blocked by design.** Running `./install.sh master`
+again on a box that already has a master refuses to proceed (it would generate a
+new admin token, overwrite the unit, and restart against a possibly-mismatched
+state dir — orphaning the swarm). To re-apply config just
+`systemctl --user restart agent-mesh`; to deliberately stand up a *fresh* master
+use `./install.sh master --force`.
 
 **Resetting to empty** — stop the service, remove the state dir, start it. A
 fresh admin token is printed.

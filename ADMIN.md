@@ -269,8 +269,9 @@ systemctl --user status agent-mesh
 journalctl --user -u agent-mesh -f            # live logs
 systemctl --user restart agent-mesh           # after code changes
 
-# backup (self-contained state dir)
-tar czf agent-mesh-backup.tgz -C ~/.local/state agent-mesh
+# backup (bundled script; install.sh master schedules it daily at 03:00)
+./mesh-backup.sh                          # -> ~/.local/state/agent-mesh-backups/
+tar xzf ~/.local/state/agent-mesh-backups/agent-mesh-<ts>.tgz -C ~/.local/state  # restore
 
 # reset to empty (LAST RESORT — loses agents/tasks)
 systemctl --user stop agent-mesh

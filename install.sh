@@ -51,6 +51,47 @@ echo
 # MASTER — stand up the orchestrator on this box
 # ===========================================================================
 if [ "$MODE" = "master" ]; then
+  # SAFETY GUARD — refuse to stand up a NEW master over an EXISTING one.
+  # Running install.sh master twice (or with a different MESH_PORT/MESH_HOST)
+  # would otherwise generate a fresh admin token, overwrite the systemd unit,
+  # and restart the service against a state dir that no longer matches — i.e.
+  # silently orphan the running swarm's data. Detect that and stop, unless the
+  # operator explicitly passes --force (re-run / intentional re-master).
+  FORCE=0
+  for arg in "$@"; do [ "$arg" = "--force" ] && FORCE=1; done
+  if [ "$FORCE" -eq 0 ]; then
+    TOKF="$STATE/admin_token"   # same path used below; needed for the check
+    EXISTING_TOKEN=0; [ -f "$TOKF" ] && EXISTING_TOKEN=1
+    EXISTING_DB=0;   [ -f "$STATE/mesh.db" ] && EXISTING_DB=1
+    UNIT_EXISTS=0;   [ -f "$UNIT" ] && UNIT_EXISTS=1
+    PORT_BUSY=0
+    if command -v ss >/dev/null 2>&1; then
+      ss -ltn 2>/dev/null | grep -q ":${PORT}\b" && PORT_BUSY=1
+    fi
+    if [ "$EXISTING_TOKEN" -eq 1 ] || [ "$EXISTING_DB" -eq 1 ] \
+       || [ "$UNIT_EXISTS" -eq 1 ] || [ "$PORT_BUSY" -eq 1 ]; then
+      {
+        echo "error: an agent-mesh master already exists on this box."
+        echo "  state dir : $STATE"
+        [ "$EXISTING_TOKEN" -eq 1 ] && echo "  - admin token present ($TOKF)"
+        [ "$EXISTING_DB" -eq 1 ]     && echo "  - database present ($STATE/mesh.db)"
+        [ "$UNIT_EXISTS" -eq 1 ]     && echo "  - systemd unit present ($UNIT)"
+        [ "$PORT_BUSY" -eq 1 ]       && echo "  - port $PORT is in use"
+        echo
+        echo "Re-running 'master' here would generate a new admin token, overwrite"
+        echo "the service unit, and restart against a state dir that may not match"
+        echo "the running swarm — orphaning its data."
+        echo
+        echo "If you meant to RE-INSTALL the existing master (same box), just:"
+        echo "  systemctl --user restart agent-mesh"
+        echo "If you intentionally want to stand up a FRESH master here (wiping"
+        echo "the existing one), run again with --force:"
+        echo "  ./install.sh master --force"
+      } >&2
+      exit 1
+    fi
+  fi
+
   mkdir -p "$STATE" "$HOME/.config/systemd/user"
 
   # 1. generate + store the admin token (idempotent: reuse if present).
@@ -126,6 +167,19 @@ EOF
     -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' -d '{}' \
     2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["join_key"])' 2>/dev/null || true)"
 
+  # 5. set up a DAILY state backup (so a wipe/corruption is recoverable).
+  #    Uses the user crontab if available; otherwise just points at the script.
+  BACKUP="$REPO_DIR/mesh-backup.sh"
+  chmod +x "$BACKUP" 2>/dev/null || true
+  BACKUP_NOTE="manual: run '$BACKUP' to snapshot state"
+  if command -v crontab >/dev/null 2>&1; then
+    CRON_LINE="0 3 * * * $BACKUP >> ${STATE}/backup.log 2>&1"
+    if ! crontab -l 2>/dev/null | grep -qF "mesh-backup.sh"; then
+      ( crontab -l 2>/dev/null; echo "$CRON_LINE" ) | crontab - 2>/dev/null \
+        && BACKUP_NOTE="daily at 03:00 via crontab (keep last 7; log: ${STATE}/backup.log)"
+    fi
+  fi
+
   cat <<EOF
 
 ──────────────────────────────────────────────────────────────
@@ -135,6 +189,7 @@ EOF
   Admin token : $ADMIN_TOKEN
                (stored in ${TOKF})
   Service     : $SERVICE_MODE
+  Backup      : $BACKUP_NOTE
 
   Join key for guests (hand this out):
   ------------------------------------
@@ -147,6 +202,10 @@ EOF
     → join key : $JOINKEY
 
   After a guest joins it appears as 'observer' in the console → assign a role.
+
+  Re-running './install.sh master' here is BLOCKED (it would orphan this
+  swarm's data). To re-apply config: systemctl --user restart agent-mesh.
+  To deliberately stand up a fresh master: ./install.sh master --force
 ──────────────────────────────────────────────────────────────
 EOF
   exit 0
