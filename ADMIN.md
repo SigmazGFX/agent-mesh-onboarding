@@ -160,10 +160,19 @@ Two cards:
 - Filter by status; click any row for the **task detail page**:
   - full spec, result, deadline, assignee, timestamps
   - **Actions**: start / cancel / requeue (role-gated)
+  - **Delete** (admin only) — permanently removes the task and its artifacts.
+    Use this to clean up old/finished work; Cancel/Requeue are safer when you
+    just want to stop work but keep the record.
   - **Review**: Approve / Reject — visible and enabled only for reviewer roles
     (qa/reviewer/orchestrator). The bare admin token gets a clear error here.
   - **Artifacts**: list with download links
   - **Task events**: the audit trail for that task
+
+### Projects
+Each project card has **mark done / cancel** (status changes, keep the record)
+and, for admins, a **delete** button that permanently removes the project, all
+its tasks, and their artifacts. Use delete to prune finished projects from the
+board.
 
 ### Events
 Full audit log with actor / type / task-id filters. Every state change is

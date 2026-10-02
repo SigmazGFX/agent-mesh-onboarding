@@ -164,6 +164,7 @@ HTTP status (401 bad/missing key, 403 role-forbidden, 404 unknown id,
 | POST | `/api/tasks/{id}/review` | qa/reviewer/orchestrator | Body: `{verdict: approved\|rejected, note?}`. |
 | POST | `/api/tasks/{id}/requeue` | orchestrator/planner | Put a failed/cancelled task back to `queued`. |
 | POST | `/api/tasks/{id}/reassign` | orchestrator/planner | Move a stuck task to another agent. Body: `{to: <agent_id>}`. Resets the task to `queued` under the new owner (`assigned_to=to`). Use when an assigned worker didn't pick up work (see `swarm-view` `stale_tasks`). CLI: `mesh_orchestrator.py reassign <task_id> <agent_id>`. |
+| DELETE | `/api/tasks/{id}` | **admin** | Permanently delete a task + its artifacts (rows and files). Returns `{ok, artifacts_removed}`. Logs a `task.deleted` event. Distinct from role-gated `cancel`/`requeue` (which keep the record for audit). |
 
 ### Projects
 A project groups related tasks (and carries shared context like repo/branch).
@@ -175,6 +176,7 @@ Created by orchestrator/planner; any authenticated agent can read.
 | POST | `/api/projects` | orchestrator/planner | Create. Body: `{name, description?, context?}`. Returns project. |
 | GET | `/api/projects/{id}` | agent | One project + its `task_items` list + counts. |
 | PATCH | `/api/projects/{id}` | orchestrator/planner | Update. Body: `{name?, description?, context?, status?}` (status: active\|paused\|done\|cancelled). |
+| DELETE | `/api/projects/{id}` | **admin** | Permanently delete a project + all its tasks + their artifacts (rows and files). Returns `{ok, tasks_removed, artifacts_removed}`. Logs a `project.deleted` event. Distinct from `PATCH status=cancelled` (which keeps the record). |
 
 Tasks link to a project via `project_id` (set at creation; filter with
 `GET /api/tasks?project_id=…`).

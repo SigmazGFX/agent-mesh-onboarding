@@ -408,6 +408,42 @@ class Store:
                       "? GROUP BY status", (pid,))
         return {r["status"]: r["n"] for r in rows}
 
+    # -- deletion (admin) ---------------------------------------------------
+    def task_artifact_ids(self, tid):
+        """Return the artifact ids attached to a task (for disk cleanup).
+        The task's artifacts column stores a JSON list of id strings."""
+        row = self.q1("SELECT artifacts FROM tasks WHERE id=?", (tid,))
+        if not row or not row["artifacts"]:
+            return []
+        try:
+            arts = json.loads(row["artifacts"])
+        except Exception:
+            return []
+        out = []
+        for a in arts:
+            if isinstance(a, str):
+                out.append(a)
+            elif isinstance(a, dict) and a.get("id"):
+                out.append(a["id"])
+        return out
+
+    def delete_task(self, tid):
+        """Delete a task + its artifacts (rows). Caller removes artifact files."""
+        self.ex("DELETE FROM artifacts WHERE task_id=?", (tid,))
+        self.ex("DELETE FROM tasks WHERE id=?", (tid,))
+
+    def delete_project(self, pid):
+        """Delete a project + all its tasks + their artifacts (rows).
+        Returns the list of artifact ids so the caller can remove their files."""
+        art_ids = []
+        for t in self.q("SELECT id FROM tasks WHERE project_id=?", (pid,)):
+            art_ids.extend(self.task_artifact_ids(t["id"]))
+        self.ex("DELETE FROM artifacts WHERE task_id IN "
+                "(SELECT id FROM tasks WHERE project_id=?)", (pid,))
+        self.ex("DELETE FROM tasks WHERE project_id=?", (pid,))
+        self.ex("DELETE FROM projects WHERE id=?", (pid,))
+        return art_ids
+
     # -- events
     def add_event(self, actor, etype, task_id=None, detail=None):
         self.ex("INSERT INTO events(ts,actor,type,task_id,detail) "
@@ -654,6 +690,8 @@ class Handler(BaseHTTPRequestHandler):
         ("PATCH",  r"^/api/agents/me$",                        "ep_patch_me"),
         ("POST",   r"^/api/agents/checkin$",                   "ep_checkin"),
         ("DELETE", r"^/api/agents/(?P<id>[^/]+)$",             "ep_del_agent"),
+        ("DELETE", r"^/api/projects/(?P<id>[^/]+)$",            "ep_del_project"),
+        ("DELETE", r"^/api/tasks/(?P<id>[^/]+)$",               "ep_del_task"),
         ("POST",   r"^/api/tasks$",                            "ep_create_task"),
         ("GET",    r"^/api/tasks$",                            "ep_list_tasks"),
         ("GET",    r"^/api/tasks/(?P<id>[^/]+)$",              "ep_get_task"),
@@ -850,6 +888,51 @@ class Handler(BaseHTTPRequestHandler):
         self.store.delete_agent(aid)
         self.store.add_event("admin", "agent.deleted", None, {"agent": aid})
         self._send_json({"ok": True})
+
+    def _remove_artifact_files(self, art_ids):
+        """Best-effort removal of artifact files from disk."""
+        removed = 0
+        for aid in art_ids:
+            p = os.path.join(self.store.data_dir, "artifacts", aid)
+            try:
+                if os.path.isfile(p):
+                    os.remove(p); removed += 1
+            except OSError:
+                pass
+        return removed
+
+    def ep_del_task(self, g):
+        # Admin-only deletion (distinct from role-gated cancel/requeue). Removes
+        # the task row + its artifacts (rows and files). Events are kept as an
+        # audit trail.
+        self._auth(need_admin=True)
+        tid = g["id"]
+        if not self.store.get_task(tid):
+            self._err(404, "unknown task")
+            return
+        art_ids = self.store.task_artifact_ids(tid)
+        self.store.delete_task(tid)
+        removed = self._remove_artifact_files(art_ids)
+        self.store.add_event("admin", "task.deleted", tid,
+                             {"artifacts_removed": removed})
+        self._send_json({"ok": True, "artifacts_removed": removed})
+
+    def ep_del_project(self, g):
+        # Admin-only. Deletes the project + all its tasks + their artifacts.
+        self._auth(need_admin=True)
+        pid = g["id"]
+        if not self.store.get_project(pid):
+            self._err(404, "unknown project")
+            return
+        n_tasks = len(self.store.q("SELECT id FROM tasks WHERE project_id=?",
+                                   (pid,)))
+        art_ids = self.store.delete_project(pid)
+        removed = self._remove_artifact_files(art_ids)
+        self.store.add_event("admin", "project.deleted", None,
+                             {"project": pid, "tasks_removed": n_tasks,
+                              "artifacts_removed": removed})
+        self._send_json({"ok": True, "tasks_removed": n_tasks,
+                         "artifacts_removed": removed})
 
     def ep_create_task(self, g):
         agent = self._auth()
@@ -1844,6 +1927,7 @@ function refreshData(){
             <button class="sm primary" onclick="go('#/project/${esc(p.id)}')">open →</button>
             <button class="sm" onclick="closeProject('${esc(p.id)}','done')">mark done</button>
             <button class="sm danger" onclick="closeProject('${esc(p.id)}','cancelled')">cancel</button>
+            ${ADMIN?`<button class="sm danger" onclick="delProject('${esc(p.id)}')" title="Permanently delete this project, all its tasks, and their artifacts (admin only). Cannot be undone.">delete</button>`:""}
           </div>
         </div>`}).join("")||'<div class="card"><div class="empty">no projects yet</div></div>');
   }
@@ -1986,6 +2070,7 @@ function pageProjects(){
             <button class="sm primary" onclick="go('#/project/${esc(p.id)}')">open →</button>
             <button class="sm" onclick="closeProject('${esc(p.id)}','done')">mark done</button>
             <button class="sm danger" onclick="closeProject('${esc(p.id)}','cancelled')">cancel</button>
+            ${ADMIN?`<button class="sm danger" onclick="delProject('${esc(p.id)}')" title="Permanently delete this project, all its tasks, and their artifacts (admin only). Cannot be undone.">delete</button>`:""}
           </div>
         </div>`}).join("")||'<div class="card"><div class="empty">no projects yet</div></div>'}
    </div>`);
@@ -2103,6 +2188,7 @@ async function pageTask(id){
          ${t.status==="queued"||t.status==="claimed"?`<button class="primary" onclick="taskAct('${t.id}','start')" title="Mark this task as actively being worked (in_progress)">Start</button>`:""}
          ${["queued","claimed","in_progress"].includes(t.status)?`<button class="danger" onclick="taskAct('${t.id}','cancel')" title="Stop this task; it won't be worked further">Cancel</button>`:""}
          ${["failed","cancelled","rejected"].includes(t.status)?`<button onclick="taskAct('${t.id}','requeue')" title="Put this task back to queued so it can be attempted again">Requeue</button>`:""}
+         ${ADMIN?`<button class="danger" onclick="delTask('${t.id}')" title="Permanently delete this task and its artifacts (admin only). This cannot be undone — Cancel/Requeue are safer for stopping work.">Delete</button>`:""}
        </div>
        ${canReview?`<h2 style="margin-top:8px">Review${tip("Only a qa/reviewer/orchestrator can approve or reject. Approve accepts the finished work; Reject sends it back (use the note to say why).")}</h2>
          <div class="row">
@@ -2223,6 +2309,8 @@ async function addTaskToProject(pid){
 async function issueKey(id){try{const d=await api("/api/admin/keys",{method:"POST",admin:true,body:{agent_id:id}});window.prompt("New key (old revoked):",d.api_key);loadAll()}catch(e){flash(e.message,1)}}
 async function revokeKey(id){if(!confirm("Revoke key for "+id+"?"))return;try{await api("/api/admin/keys/"+id,{method:"DELETE",admin:true});flash("revoked");loadAll()}catch(e){flash(e.message,1)}}
 async function delAgent(id){if(!confirm("Delete agent "+id+"? This removes it and revokes its key."))return;try{await api("/api/agents/"+id,{method:"DELETE",admin:true});flash("deleted");loadAll()}catch(e){flash(e.message,1)}}
+async function delTask(id){if(!confirm("Permanently delete task "+id+" and its artifacts? This cannot be undone."))return;try{const d=await api("/api/tasks/"+id,{method:"DELETE",admin:true});flash("task deleted"+(d.artifacts_removed?" ("+d.artifacts_removed+" artifact(s) removed)":""));location.hash="#/tasks";loadAll()}catch(e){flash(e.message,1)}}
+async function delProject(id){if(!confirm("Permanently delete project "+id+", ALL of its tasks, and their artifacts? This cannot be undone."))return;try{const d=await api("/api/projects/"+id,{method:"DELETE",admin:true});flash("project deleted"+(d.tasks_removed?" ("+d.tasks_removed+" task(s), "+d.artifacts_removed+" artifact(s) removed)":""));location.hash="#/projects";loadAll()}catch(e){flash(e.message,1)}}
 async function setRole(id,role){try{await api("/api/admin/agents/"+id,{method:"PATCH",admin:true,body:{role}});flash("role → "+role);loadAll()}catch(e){flash(e.message,1)}}
 async function toggleAdminCap(id,grant){
   // Read current caps, add/remove 'admin', write back.
