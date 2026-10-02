@@ -45,6 +45,45 @@ def now():
     return time.time()
 
 
+# ---------------------------------------------------------------------------
+# SSE change-notification hub (instant console updates)
+#
+# A tiny pub/sub: any state mutation calls notify_change(), which wakes every
+# connected /api/stream subscriber so the browser can re-fetch fresh data
+# immediately instead of waiting for its 5s poll. One shared condition variable
+# is enough — subscribers just need to know "something changed", not what.
+# ---------------------------------------------------------------------------
+class ChangeHub:
+    def __init__(self):
+        self._cv = threading.Condition()
+
+    def subscribe(self):
+        """Return a per-connection waiter. Call .wait(timeout) to block until a
+        change or timeout; call .close() on disconnect."""
+        with self._cv:
+            waiters = getattr(self, "_waiters", None)
+            if waiters is None:
+                waiters = self._waiters = []
+            w = {"alive": True}
+            waiters.append(w)
+            return w
+
+    def close(self, w):
+        with self._cv:
+            try:
+                self._waiters.remove(w)
+            except ValueError:
+                pass
+            w["alive"] = False
+
+    def notify_change(self):
+        with self._cv:
+            self._cv.notify_all()
+
+
+HUB = ChangeHub()
+
+
 def sha256_hex(b):
     return hashlib.sha256(b).hexdigest()
 
@@ -294,6 +333,7 @@ class Store:
             args.append(now())
             args.append(tid)
             self.ex(f"UPDATE tasks SET {', '.join(sets)} WHERE id=?", args)
+            HUB.notify_change()   # task state changed — wake SSE subscribers
 
     def next_pullable(self, caller_role, caller_id):
         """Next queued task a caller may claim.
@@ -374,6 +414,7 @@ class Store:
                 "VALUES(?,?,?,?,?)",
                 (now(), actor, etype, task_id,
                  json.dumps(detail) if detail is not None else None))
+        HUB.notify_change()   # wake SSE subscribers — something changed
 
     def list_events(self, task_id=None, actor=None, etype=None, limit=50):
         sql = "SELECT * FROM events"
@@ -583,7 +624,10 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("invalid JSON body")
 
     def _auth(self, need_admin=False):
-        h = self.headers.get("Authorization", "")
+        return self._auth_from(self.headers.get("Authorization", ""),
+                               need_admin=need_admin)
+
+    def _auth_from(self, h, need_admin=False):
         if need_admin:
             # Admin-gated: the admin token OR an agent with the 'admin' cap.
             if not self.mesh.auth_is_admin(h):
@@ -640,6 +684,7 @@ class Handler(BaseHTTPRequestHandler):
         ("POST",   r"^/api/messages$",                         "ep_send_msg"),
         ("POST",   r"^/api/messages/(?P<id>[^/]+)/read$",      "ep_mark_read"),
         ("GET",    r"^/api/messages/stream$",                  "ep_messages_stream"),
+        ("GET",    r"^/api/stream$",                            "ep_sse_stream"),
         ("GET",    r"^/api/admin/stats$",                      "ep_admin_stats"),
         ("GET",    r"^/$",                                     "ep_ui"),
     ]
@@ -1453,6 +1498,54 @@ class Handler(BaseHTTPRequestHandler):
                          "unread": self.store.count_unread(caller["id"]),
                          "timed_out": True})
 
+    def ep_sse_stream(self, g):
+        # Server-Sent Events: instant console updates. The browser opens this
+        # once; we hold the connection and push a `change` event whenever mesh
+        # state mutates (via HUB.notify_change). The client re-fetches data on
+        # each ping. A periodic keepalive comment prevents proxies from
+        # closing an idle stream. Auth: Bearer header OR ?token= (EventSource
+        # can't set headers, so the console uses the query param).
+        q = parse_qs(urlparse(self.path).query)
+        h = self.headers.get("Authorization", "")
+        if not h:
+            tok = (q.get("token") or [""])[0]
+            if tok:
+                h = "Bearer " + tok
+        agent = self._auth_from(h)   # raises 403 if no valid key/admin
+        try:
+            keepalive = min(float((q.get("keepalive") or ["15"])[0]), 55)
+        except ValueError:
+            keepalive = 15.0
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")   # disable proxy buffering
+        self.end_headers()
+        w = HUB.subscribe()
+        try:
+            # initial hello so the client knows the stream is live
+            self.wfile.write(b"event: hello\ndata: {}\n\n")
+            self.wfile.flush()
+            last_keepalive = time.monotonic()
+            while True:
+                with HUB._cv:
+                    changed = HUB._cv.wait(timeout=1.0)
+                now_mono = time.monotonic()
+                if changed:
+                    self.wfile.write(b"event: change\ndata: {}\n\n")
+                    self.wfile.flush()
+                    last_keepalive = now_mono
+                elif now_mono - last_keepalive >= keepalive:
+                    # SSE comment line — keeps the connection alive, ignored by clients
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    last_keepalive = now_mono
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass   # client disconnected
+        finally:
+            HUB.close(w)
+
     # ---- web UI
     def ep_ui(self, g):
         base = getattr(Handler, "base_path", "") or ""
@@ -2165,10 +2258,29 @@ async function taskReview(id,verdict){
 
 /* ---------------- boot ---------------- */
 function hasSession(){return !!(ADMIN||localStorage.getItem("mesh_agent_key"))}
+// Instant updates via Server-Sent Events: subscribe once; on each `change`
+// ping, re-fetch data immediately. The 5s poll stays as a fallback in case the
+// stream drops (proxy timeout, network blip) so the console never goes stale.
+let _es=null,_sseAlive=false;
+function connectStream(){
+  if(_es){try{_es.close()}catch{};_es=null}
+  if(!hasSession())return;
+  const tok=localStorage.getItem("mesh_agent_key")||sessionStorage.getItem("mesh_adm");
+  // EventSource can't set an Authorization header, so pass the token as a
+  // query param; the server accepts either for this endpoint.
+  const es=new EventSource(BASE+"/api/stream?token="+encodeURIComponent(tok||""));
+  _es=es;
+  es.addEventListener("hello",()=>{_sseAlive=true});
+  es.addEventListener("change",()=>{if(hasSession())loadAll()});
+  es.onerror=()=>{_sseAlive=false;   // EventSource auto-reconnects; poll covers gaps
+    try{es.close()}catch{};_es=null;
+    setTimeout(connectStream,3000);};
+}
 function boot(){
   if(!hasSession()){renderLock();return}
   route(true);
   clearInterval(window._rt);window._rt=setInterval(()=>{if(hasSession())loadAll()},5000);
+  connectStream();
 }
 window.addEventListener("hashchange",()=>route(false));
 boot();
