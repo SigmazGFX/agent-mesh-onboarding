@@ -1,364 +1,558 @@
 # agent-mesh — Agent Integration Guide
 
-How to give an agent its mesh identity and make it actually use the endpoint.
-
-**Platform-agnostic by design.** agent-mesh is plain HTTP + JSON with Bearer
-auth. There is **no SDK, no framework dependency, and nothing Hermes-specific in
-the core** (`mesh_server.py`, `mesh` CLI, `MeshClient` are pure Python stdlib).
-Any agent platform that can (a) store a secret and (b) send an HTTP request can
-join: Hermes, Claude Code, Codex, OpenCode, a custom LLM loop, a cron job, or a
-plain script. The sections below show Hermes as one example and give a
-runtime-agnostic pattern for everything else.
+How to give an agent its mesh identity and have it join, receive work, and
+report results. **Platform-agnostic by design.** agent-mesh is plain HTTP +
+JSON with Bearer auth — no SDK, no framework, no platform-specific dependency.
+Any agent that can store a secret and make an HTTP request can participate:
+Devin, Claude Code, OpenAI Agents, Codex, a custom LLM loop, a cron job, or
+a plain script.
 
 ---
 
-## The mental model
+## Mental model
 
-An agent gets **one API key** (`mesh_…`) that encodes who it is and what role
-it plays. Everything else is ordinary HTTP with a Bearer header. There is no
-SDK to install — `MeshClient` is a convenience wrapper you may import, but raw
-`curl`/`urllib` works identically.
+An agent gets **one API key** (`mesh_…`) that identifies who it is and what
+role it plays. Everything else is ordinary HTTP with a `Bearer` header.
 
 The loop every worker runs:
 
 ```
-checkin ──▶ pull ──▶ (got task?) ──▶ start ──▶ do work + progress ──▶ result (+upload)
+checkin ──▶ pull ──▶ (got task?) ──▶ start ──▶ work + progress ──▶ result [+ upload]
    │           │                no
-   └───────────┴──────── sleep / backoff ───────────────────────────────┘
+   └───────────┴──────── sleep / backoff ──────────────────────────────────┘
 ```
+
+**What the agent receives per turn (on every checkin):**
+- Its own role and agent ID
+- Its current assignment — task ID, title, kind, project context, and the full
+  `spec` (the structured payload describing exactly what to do)
+- Count of unread peer messages
+
+So each turn is self-contained. The agent doesn't need memory between polls.
 
 ---
 
-## 1. Get the agent registered (one-time, human or orchestrator)
+## Step 1 — Register the agent (one-time, done by a human admin)
 
-From the web console (`http://127.0.0.1:4850/`) or the admin API:
+From the web console or API:
 
 ```bash
-ADMIN=adm_...            # your admin token
+ADMIN=adm_...
 curl -s http://127.0.0.1:4850/api/agents/register -X POST \
-     -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
-     -d '{"name":"haans","role":"worker","caps":["task.worker"]}'
+     -H "Authorization: Bearer $ADMIN" \
+     -H 'Content-Type: application/json' \
+     -d '{"name":"my-worker","role":"worker","caps":["task.worker"]}'
 ```
 
-Response includes `"api_key": "mesh_..."` — **shown once**. Capture it now;
-there is no way to retrieve it later (only reissue).
+Response includes `"api_key": "mesh_..."` — **shown once**. Capture it. You
+can only reissue, never retrieve, a lost key.
 
-Pick the role to match the job:
-- `worker` — executes pulled tasks (the common case).
-- `qa` / `reviewer` — reviews/approves finished work.
-- `planner` / `orchestrator` — creates and dispatches tasks.
+**Or** let a guest box self-enroll with a join key:
+
+```bash
+./install.sh guest
+# → enter base URL + join key → lands as observer → admin promotes the role
+```
+
+**Pick the right role:**
+- `worker` — executes pulled tasks (the common case)
+- `qa` — pulls tasks, submits results, and can approve/reject work
+- `reviewer` — approve/reject only; no task execution
+- `planner` — creates and dispatches tasks; also executes
+- `orchestrator` — full control: dispatch, execute, review, cancel
 
 ---
 
-## 2. Store the key where the agent can read it
+## Step 2 — Store the key where the agent can read it
 
-### Hermes agent
-
-Put it in the agent's env file so tool calls can read it without hardcoding:
+**Never paste a mesh key into a chat, a commit, or a log.** Treat it as a
+password. If leaked, rekey from the console — the old key is immediately dead.
 
 ```bash
-# ~/.hermes/.env  (or the specific agent's env, e.g. ~/.harry/.env)
-MESH_BASE_URL=http://127.0.0.1:4850
-MESH_API_KEY=mesh_YOUR_KEY
+# Recommended: env vars or a secrets manager
+export MESH_BASE_URL=http://127.0.0.1:4850
+export MESH_API_KEY=mesh_YOUR_KEY
 ```
-
-Then any Python the agent runs does:
 
 ```python
 import os
-from mesh_server import MeshClient          # see §3 for the path
+from mesh_server import MeshClient
 mc = MeshClient(os.environ["MESH_BASE_URL"], os.environ["MESH_API_KEY"])
 ```
 
-> Never paste the key into chat, relay messages, or committed files. Treat it
-> like a password. If it leaks, rekey from the console — the old one dies
-> instantly.
-
-### Any other runtime (generic agent platforms)
-
-The only requirements are: store the key as a secret, and send
-`Authorization: Bearer *** on each request. That's it — no Hermes, no SDK.
-
-**The runtime-agnostic worker pattern.** Any LLM agent (Claude Code, Codex,
-OpenCode, a custom loop, etc.) drives `agent_worker.py`, which wraps the HTTP
-calls for you. The agent's job is to *do the work* between claim and report:
-
-```bash
-# 1. Claim one task assigned to this agent (prints its full spec as JSON).
-#    Blocks until work is available, then exits.
-python3 /path/to/agent-mesh/agent_worker.py once --poll 15
-
-# 2. The agent reads the printed spec, does the REAL work in its own tools
-#    (edit files, run builds, etc.), then reports a genuine result:
-python3 /path/to/agent-mesh/agent_worker.py report <task_id> \
-    --status ok --output '{"summary":"...","commit":"abc"}'
-# ...or on failure:
-python3 /path/to/agent-mesh/agent_worker.py report <task_id> \
-    --status failed --error "what went wrong"
-```
-
-Point `agent_worker.py` at the swarm by giving it the same config the `mesh` CLI
-uses (`~/.config/agent-mesh/config.json` with `base_url` + `api_key`). To use a
-different location, set `MESH_CONFIG` or edit `CFG` at the top of the file.
-
-**Or skip the helper entirely** — the whole contract is a handful of REST calls
-(see §5 raw-HTTP examples and SCHEMA.md). A platform with no Python can do it
-with `curl`:
-
-```bash
-KEY=***        # the agent's mesh_ key
-BASE=https://swarm.example.com/agent-mesh
-curl -s $BASE/api/agents/checkin -X POST -H "Authorization: Bearer ***" -d '{}'
-curl -s $BASE/api/work/pull      -H "Authorization: Bearer ***"   # -> {"task":{...}} or null
-```
-
-**Presence:** whatever your platform's scheduler is (cron, systemd timer, the
-agent's own loop), fire `checkin` at least every ~60s so the server keeps you
-*online* (window is 90s). On Linux a tiny `mesh-presence` service does this; on
-other platforms a cron line or the agent's heartbeat tick is equivalent.
-
 ---
 
-## 3. Make `MeshClient` importable
+## Step 3 — Choose how the agent runs the loop
 
-`MeshClient` lives at the bottom of `mesh_server.py`. Point `sys.path` at the
-directory containing it:
-
-```python
-import sys
-sys.path.insert(0, "/home/sigmaxgfx/Work/agent-mesh")   # this box
-from mesh_server import MeshClient
-```
-
-If the agent lives on a different box, copy `mesh_server.py` there too (it's
-portable) and adjust the path — or just skip the client and use raw HTTP (§5).
-
----
-
-## 4. The worker loop
-
-### Easiest: `mesh worker` (built-in daemon)
-
-The CLI ships a ready-made poll/execute/report loop:
+### A. `mesh worker` — built-in daemon (easiest)
 
 ```bash
-mesh worker                 # run forever: heartbeat + pull + execute + report
-mesh worker --poll 30       # idle 30s between pulls (default)
-mesh worker --heartbeat 60  # presence heartbeat every 60s (keep < 90 to stay 'online')
-mesh worker --once          # single tick then exit (for cron/timer use)
-mesh worker --dry-run        # claim + report but don't execute
+mesh worker               # run forever: heartbeat + pull + execute + report
+mesh worker --poll 30     # idle 30s between pulls (default)
+mesh worker --once        # single tick then exit (good for cron/timer)
+mesh worker --listen      # also start an A2A inbox listener in same process
 ```
 
-What it does each tick: refresh presence (`checkin`), `pull` the next task, and
-if there is one — `start` → execute → `progress` → `result`. It handles
-SIGTERM/SIGINT cleanly and backs off if the orchestrator is unreachable.
-
-**How a task gets executed:** by default the worker runs `spec.command` (a shell
-string in the task spec) and reports its stdout/stderr/exit code. For real agent
-work, point `MESH_WORKER_CMD` at your own executor script — it receives the full
-task JSON on stdin and exits 0 for success:
+By default the worker runs `spec.command` (a shell string in the task spec).
+To plug in a real LLM executor, set `MESH_WORKER_CMD`:
 
 ```bash
-MESH_WORKER_CMD=~/.local/bin/my-agent-executor mesh worker
+MESH_WORKER_CMD=~/.local/bin/my-llm-executor mesh worker
+# executor receives the full task JSON on stdin, exits 0 for success
 ```
 
-(Or edit `execute_task()` in `mesh` to call your agent's tooling directly.)
+### B. `agent_worker.py` — one-shot helper (for turn-based platforms)
 
-### Cadence & presence (the two knobs)
+```bash
+# Claim a task and print its spec JSON, then exit:
+python3 agent_worker.py once --poll 15
 
-- **Poll interval** (`--poll`, default 30s) = how fast you pick up new work.
-- **Heartbeat** (`--heartbeat`, default 60s) = how often you refresh presence.
-  The server marks an agent *online* if seen within **90s**, so keep the
-  heartbeat under that or you'll flap to *offline* in the console.
+# After doing the real work, report back:
+python3 agent_worker.py report <task_id> \
+    --status ok --output '{"commit":"abc","summary":"Added the chart"}'
 
-For a Hermes-based guest, a monitor-gated **cron tick** (`mesh worker --once`
-every minute) is often better than a standing daemon — near-zero idle cost, and
-you only burn an LLM turn when there's actually a task.
+# On failure:
+python3 agent_worker.py report <task_id> \
+    --status failed --error "Build failed: missing dependency"
 
-### Rolling your own (reference implementation)
+# Upload an artifact file:
+python3 agent_worker.py upload <task_id> ./result.tar.gz
+```
 
-If you'd rather not use the built-in worker, the loop is trivially small:
+### C. Python client — embed in your own loop
 
 ```python
-#!/usr/bin/env python3
-"""mesh-worker: poll agent-mesh, execute tasks, report back."""
-import os, sys, time, traceback
-sys.path.insert(0, "/home/sigmaxgfx/Work/agent-mesh")
+import sys, os, time
+sys.path.insert(0, "/path/to/agent-mesh")
 from mesh_server import MeshClient
 
-BASE = os.environ.get("MESH_BASE_URL", "http://127.0.0.1:4850")
-KEY  = os.environ["MESH_API_KEY"]
-mc   = MeshClient(BASE, KEY)
+mc = MeshClient(os.environ["MESH_BASE_URL"], os.environ["MESH_API_KEY"])
 
-def do_work(task):
-    """Replace with real execution. Return (status, output_dict, artifact_path|None)."""
+def do_work(task) -> tuple[str, dict, str | None]:
+    """Your actual execution. Returns (status, output, artifact_path|None)."""
     spec = task["spec"]
-    # ... run the actual job described by spec ...
-    return "ok", {"note": "done"}, None
-
-POLL_S = int(os.environ.get("MESH_POLL_S", "30"))
+    # ... run the job described by spec ...
+    return "ok", {"summary": "done"}, None
 
 while True:
+    mc.checkin()
+    task = mc.pull()
+    if not task:
+        time.sleep(30)
+        continue
+    tid = task["id"]
     try:
-        mc.checkin()
-        task = mc.pull()
-        if not task:
-            time.sleep(POLL_S); continue
-        tid = task["id"]
         mc.start(tid)
         mc.progress(tid, pct=10, note="started")
         status, output, artifact = do_work(task)
         if artifact:
             mc.upload(tid, artifact)
         mc.report(tid, status, output=output)
-        mc.progress(tid, pct=100, note="complete")
-    except Exception:
-        traceback.print_exc()
-        time.sleep(POLL_S)   # stay alive; next loop retries cleanly
+    except Exception as e:
+        mc.report(tid, "failed", error=str(e))
+    time.sleep(5)
 ```
 
-Run it as a long-lived process (systemd user service, tmux, etc.). Because
-pull/start/result are idempotent-ish and the server dedupes by task state, a
-crash-and-restart won't corrupt the queue — the task simply stays where it was.
+### D. Raw HTTP (any language, no Python)
 
-### Scheduling instead of a daemon
+```bash
+KEY=mesh_YOUR_KEY
+BASE=http://127.0.0.1:4850
 
-If the agent already has a cron/timer, a lighter pattern is a one-shot tick:
+# Heartbeat
+curl -s $BASE/api/agents/checkin -X POST \
+     -H "Authorization: Bearer $KEY" -d '{}'
+
+# Claim next task assigned to me
+curl -s $BASE/api/work/pull \
+     -H "Authorization: Bearer $KEY"
+# Returns: {"task": {...}} or {"task": null}
+
+# Mark claimed task as started
+curl -s $BASE/api/tasks/task-XXXX/start -X POST \
+     -H "Authorization: Bearer $KEY"
+
+# Report progress
+curl -s $BASE/api/tasks/task-XXXX/progress -X POST \
+     -H "Authorization: Bearer $KEY" \
+     -H 'Content-Type: application/json' \
+     -d '{"pct":50,"note":"halfway"}'
+
+# Submit result
+curl -s $BASE/api/tasks/task-XXXX/result -X POST \
+     -H "Authorization: Bearer $KEY" \
+     -H 'Content-Type: application/json' \
+     -d '{"status":"ok","output":{"commit":"abc123"}}'
+
+# Upload an artifact file (multipart)
+curl -s $BASE/api/artifacts -X POST \
+     -H "Authorization: Bearer $KEY" \
+     -F "task_id=task-XXXX" \
+     -F "file=@/path/to/result.zip"
+```
+
+---
+
+## Platform examples
+
+### Devin (Cognition)
+
+Store `MESH_BASE_URL` and `MESH_API_KEY` as Devin secrets. Add to the session
+system prompt or a `.devin/skills/mesh-worker/SKILL.md`:
+
+```
+You are a worker in an agent-mesh swarm.
+
+On each turn:
+1. Run: python3 /path/to/agent-mesh/agent_worker.py once --poll 10
+   (This claims your next assigned task and prints its full spec as JSON.
+    If no task is available it waits up to 10 seconds then exits quietly.)
+2. Read the printed JSON carefully. Complete the work described by "spec"
+   using your tools (edit files, run tests, call APIs, etc.)
+3. Report the result:
+   python3 /path/to/agent-mesh/agent_worker.py report <task_id> \
+       --status ok --output '{"summary":"...","files_changed":["..."]}'
+4. If you produced an output file, upload it:
+   python3 /path/to/agent-mesh/agent_worker.py upload <task_id> <file>
+5. If the task failed, report honestly:
+   python3 /path/to/agent-mesh/agent_worker.py report <task_id> \
+       --status failed --error "what went wrong"
+
+Never claim you completed work you did not complete. The orchestrator can see
+task status and will requeue failed work.
+```
+
+To spawn an orchestrator subagent from Devin, use `run_subagent` — see the
+full handoff prompt in [ORCHESTRATOR.md](ORCHESTRATOR.md).
+
+### Claude Code (Anthropic)
+
+Set env vars in your shell before opening Claude Code, or add them to
+`.env` in the project root (never commit real keys):
+
+```bash
+export MESH_BASE_URL=http://127.0.0.1:4850
+export MESH_API_KEY=mesh_YOUR_KEY
+```
+
+In a Claude Code `/task` or shell invocation:
+
+```bash
+# Claim the next task:
+python3 /path/to/agent-mesh/agent_worker.py once
+# Claude reads the spec and does the work, then:
+python3 /path/to/agent-mesh/agent_worker.py report $TASK_ID \
+    --status ok --output '{"summary":"..."}'
+```
+
+Or integrate directly from a Python tool call:
 
 ```python
-mc.checkin()
-task = mc.pull()
+import sys, os
+sys.path.insert(0, "/path/to/agent-mesh")
+from mesh_server import MeshClient
+
+mc = MeshClient(os.environ["MESH_BASE_URL"], os.environ["MESH_API_KEY"])
+print(mc.me())        # verify identity
+task = mc.pull()      # claim next task
 if task:
-    # execute synchronously, then report
+    print(task["spec"])   # Claude reads and acts on this
+    # ... do work ...
+    mc.report(task["id"], "ok", output={"summary": "completed"})
 ```
 
-Run the tick every N seconds/minutes. Same semantics, no standing process.
+For orchestrator use from Claude Code (spawning a planning subagent via
+`/task`), see [ORCHESTRATOR.md](ORCHESTRATOR.md).
 
----
-
-## 4b. Seeing other agents (presence) & talking to them
-
-**Presence — yes.** Any authenticated agent can list the swarm and who's online:
-
-```bash
-mesh peers
-# online     worker      workertest (you)  [workertest-…]
-# offline    qa          QAOne             [qaone-…]
-```
-
-"Online" means heartbeated within the last 90s; otherwise it shows *offline*
-with its last-seen time. This is pull-based presence (no push) — an agent only
-appears online while it's checking in.
-
-**Direct agent-to-agent messaging — yes, native (v0.2+).** Agents have a
-peer-to-peer channel over the mesh, so coordination no longer has to route
-through the master. Each agent has an inbox; messages thread via
-`correlation_id`/`reply_to`.
-
-```bash
-mesh msg <agent> "ready for review?"     # send a note
-mesh inbox --unread                       # read your peer messages
-mesh listen                              # long-poll: print each message as it lands (~1s)
-mesh worker --listen                      # task loop + A2A listener in one process
-```
-
-Raw HTTP: `POST /api/messages` (`{to, type?, payload?}`), `GET /api/messages`
-(own inbox; `X-Read: unread` header for unread-only),
-`POST /api/messages/{id}/read`, and `GET /api/messages/stream?last_id=N&timeout=S`
-(long-poll near-push). Full shapes in [SCHEMA.md](SCHEMA.md) §A2A Messaging.
-
-Freeform social/emergency chatter *still* belongs on the omarchy-relay A2A
-channel (the original design split: mesh = work + coordination, relay =
-social/emergency). Use mesh A2A for task-related peer talk; use relay for
-everything conversational.
-
----
-
-## 5. Raw HTTP (no client at all)
-
-For runtimes where importing Python isn't natural, the whole contract is REST:
-
-| Action | Request |
-|---|---|
-| Check in | `POST /api/agents/checkin` body `{"load":0.2}` |
-| Pull work | `GET /api/work/pull` → `{"task": {...}}` or `{"task": null}` |
-| Start | `POST /api/tasks/{id}/start` |
-| Progress | `POST /api/tasks/{id}/progress` body `{"pct":50,"note":"..."}` |
-| Result | `POST /api/tasks/{id}/result` body `{"status":"ok","output":{...}}` |
-| Upload | `POST /api/artifacts` multipart `task_id` + `file` |
-
-Every request carries `Authorization: Bearer <key>`. That's the entire
-integration surface.
-
----
-
-## 6. Orchestrator-side usage
-
-An orchestrator/planner key additionally can:
+### OpenAI Agents SDK
 
 ```python
-mc.create_task("Add latency chart", kind="code",
-               spec={"repo":"~/Work/box-pulse","instructions":"..."},
-               priority=2)                       # -> queued
-tasks = mc._req("GET", "/api/tasks?status=queued")  # inspect the board
-mc._req("POST", f"/api/tasks/{tid}/cancel")       # stop something
-mc._req("POST", f"/api/tasks/{tid}/requeue")      # retry a failed one
+import os, time
+import sys; sys.path.insert(0, "/path/to/agent-mesh")
+from mesh_server import MeshClient
+from agents import Agent, Runner   # openai-agents SDK
+
+mc  = MeshClient(os.environ["MESH_BASE_URL"], os.environ["MESH_API_KEY"])
+
+coding_agent = Agent(
+    name="MeshWorker",
+    instructions="You are a software development assistant in a dev swarm. "
+                 "You receive task specs and produce working code changes.",
+    model="gpt-4o",
+)
+
+while True:
+    mc.checkin()
+    task = mc.pull()
+    if not task:
+        time.sleep(30)
+        continue
+    tid = task["id"]
+    mc.start(tid)
+    try:
+        result = Runner.run_sync(
+            coding_agent,
+            f"Complete this task:\n\n{task['title']}\n\nSpec:\n{task['spec']}"
+        )
+        mc.report(tid, "ok", output={"response": result.final_output})
+    except Exception as e:
+        mc.report(tid, "failed", error=str(e))
 ```
 
-Reviewers/QA:
+### OpenAI Chat Completions (raw)
 
 ```python
-mc._req("POST", f"/api/tasks/{tid}/review", {"verdict":"approved","note":"LGTM"})
+import os, time, json
+import sys; sys.path.insert(0, "/path/to/agent-mesh")
+from mesh_server import MeshClient
+from openai import OpenAI
+
+mc  = MeshClient(os.environ["MESH_BASE_URL"], os.environ["MESH_API_KEY"])
+oai = OpenAI()
+
+SYSTEM = (
+    "You are a software development agent in a dev swarm. "
+    "When given a task spec, complete it and reply with a JSON object "
+    '{"summary": "...", "files_changed": [...], "notes": "..."}.'
+)
+
+while True:
+    mc.checkin()
+    task = mc.pull()
+    if not task:
+        time.sleep(30)
+        continue
+    tid = task["id"]
+    mc.start(tid)
+    try:
+        resp = oai.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": SYSTEM},
+                {"role": "user",   "content": json.dumps(task["spec"])}
+            ]
+        )
+        content = resp.choices[0].message.content
+        output  = json.loads(content) if content.startswith("{") else {"response": content}
+        mc.report(tid, "ok", output=output)
+    except Exception as e:
+        mc.report(tid, "failed", error=str(e))
+```
+
+### Google Gemini
+
+```python
+import os, time, json
+import sys; sys.path.insert(0, "/path/to/agent-mesh")
+from mesh_server import MeshClient
+import google.generativeai as genai
+
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-1.5-pro")
+mc    = MeshClient(os.environ["MESH_BASE_URL"], os.environ["MESH_API_KEY"])
+
+while True:
+    mc.checkin()
+    task = mc.pull()
+    if not task:
+        time.sleep(30)
+        continue
+    tid = task["id"]
+    mc.start(tid)
+    try:
+        prompt = f"Complete this task:\n{task['title']}\n\nSpec:\n{json.dumps(task['spec'], indent=2)}"
+        resp   = model.generate_content(prompt)
+        mc.report(tid, "ok", output={"response": resp.text})
+    except Exception as e:
+        mc.report(tid, "failed", error=str(e))
+```
+
+### Cron / scheduled job (lowest overhead)
+
+For agents that need to be on-demand rather than always running. Near-zero
+idle cost — an LLM turn is only spent when there's real work queued.
+
+```bash
+# /etc/cron.d/mesh-worker  — runs every minute
+* * * * * youruser \
+    MESH_BASE_URL=http://127.0.0.1:4850 \
+    MESH_API_KEY=mesh_YOURKEY \
+    python3 /path/to/agent-mesh/agent_worker.py once
+```
+
+Or as a systemd timer (`OnCalendar=minutely`) for tighter control over the
+service environment.
+
+### Custom LLM loop (any model/framework)
+
+```python
+import os, time
+import sys; sys.path.insert(0, "/path/to/agent-mesh")
+from mesh_server import MeshClient
+
+mc = MeshClient(os.environ["MESH_BASE_URL"], os.environ["MESH_API_KEY"])
+
+def call_my_llm(spec: dict) -> dict:
+    """Replace with Ollama, Mistral, Cohere, Anthropic, etc."""
+    raise NotImplementedError
+
+while True:
+    mc.checkin()
+    task = mc.pull()
+    if not task:
+        time.sleep(30)
+        continue
+    tid = task["id"]
+    try:
+        mc.start(tid)
+        mc.progress(tid, pct=10, note="working")
+        result = call_my_llm(task["spec"])
+        mc.report(tid, "ok", output=result)
+    except Exception as e:
+        mc.report(tid, "failed", error=str(e))
 ```
 
 ---
 
-## 7. Mapping from the old A2A-over-relay flow
+## Making `MeshClient` importable
 
-If an agent already speaks A2A envelopes, here's the translation so migration
-is mechanical:
+`MeshClient` lives at the bottom of `mesh_server.py`. Point `sys.path` at the
+directory containing it:
 
-| A2A (relay) | agent-mesh (HTTP) |
+```python
+import sys
+sys.path.insert(0, "/path/to/agent-mesh")
+from mesh_server import MeshClient
+```
+
+If the agent runs on a different box, copy `mesh_server.py` there or skip the
+client entirely and use raw HTTP — it's the same calls either way.
+
+---
+
+## Presence: staying online
+
+The server marks an agent **online** if it heartbeated within the last 90s.
+To stay online while working, fire `checkin` at least every 60s.
+
+- **Daemon mode** (`mesh worker`): handles this automatically.
+- **One-shot mode** (`agent_worker.py once`): fire `checkin` separately if the
+  job runs longer than 90s (or use `mesh worker --once` which does a checkin
+  before pulling).
+- **Cron/timer**: a one-minute schedule naturally keeps presence alive as long
+  as `checkin` is the first call each tick.
+
+Offline agents still receive queued work — they just show as `offline` in the
+console until their next heartbeat.
+
+---
+
+## Agent-to-agent messaging (A2A)
+
+Agents have a native peer inbox. No external channel needed.
+
+```bash
+mesh msg <agent-name> "ready for review?"   # send a note
+mesh inbox --unread                          # read your inbox
+mesh listen                                  # long-poll: print messages as they land
+mesh worker --listen                         # task loop + A2A listener in one process
+```
+
+Raw HTTP:
+
+```bash
+# Send
+curl -s $BASE/api/messages -X POST \
+     -H "Authorization: Bearer $KEY" \
+     -H 'Content-Type: application/json' \
+     -d '{"to":"qa-bot-id","payload":{"text":"PR is ready for review"}}'
+
+# Read inbox
+curl -s $BASE/api/messages \
+     -H "Authorization: Bearer $KEY" \
+     -H "X-Read: unread"
+
+# Long-poll (near-push, ~1s latency)
+curl -s "$BASE/api/messages/stream?last_id=0&timeout=25" \
+     -H "Authorization: Bearer $KEY"
+```
+
+---
+
+## Orchestrator-side usage
+
+An orchestrator or planner key can create and manage tasks:
+
+```python
+mc.create_task(
+    "Add latency chart",
+    kind="code",
+    spec={"repo": "~/Work/dashboard", "instructions": "Add a P95 latency chart to the overview page."},
+    priority=2,
+    assigned_to="worker-agent-id"
+)
+
+# Inspect the board
+tasks = mc._req("GET", "/api/tasks?status=queued")
+
+# Cancel a task
+mc._req("POST", f"/api/tasks/{tid}/cancel")
+
+# Retry a failed task
+mc._req("POST", f"/api/tasks/{tid}/requeue")
+
+# Reassign a stuck task to another agent
+mc._req("POST", f"/api/tasks/{tid}/reassign", {"to": "other-agent-id"})
+```
+
+Reviewers and QA agents:
+
+```python
+mc._req("POST", f"/api/tasks/{tid}/review", {"verdict": "approved", "note": "LGTM"})
+```
+
+---
+
+## A2A concept mapping
+
+| A2A concept | agent-mesh HTTP call |
 |---|---|
 | `hello` / `heartbeat` | `POST /api/agents/checkin` |
-| `task.dispatch` | `POST /api/tasks` (orch) then worker `GET /api/work/pull` |
-| `task.ack` | implicit — `pull` claims it; `start` confirms |
+| `task.dispatch` | `POST /api/tasks` (orch) → worker `GET /api/work/pull` |
+| `task.ack` | implicit — `pull` claims; `start` confirms |
 | `task.progress` | `POST /api/tasks/{id}/progress` |
-| `task.result` | `POST /api/tasks/{id}/result` (+ `POST /api/artifacts`) |
+| `task.result` | `POST /api/tasks/{id}/result` + `POST /api/artifacts` |
 | `task.cancel` | `POST /api/tasks/{id}/cancel` |
-| `note` (freeform) | **stays on the relay** — don't route chatter through mesh |
-
-Relay keeps its job (social, emergency, announcing "new orchestrator at
-<url>"). All *work* moves to mesh.
+| peer message / `note` | `POST /api/messages` |
 
 ---
 
-## 8. Failure modes & etiquette
+## Failure handling & etiquette
 
-- **No task available** → `pull` returns `{"task": null}`. Sleep and retry;
-  don't hammer. Back off exponentially if the queue is persistently empty.
-- **Endpoint down** → catch the connection error, log, retry with backoff. The
-  queue is durable; nothing is lost while you're offline.
-- **Don't double-execute** → always `pull` (which atomically claims) rather
-  than reading the list and acting. Two workers can't grab the same task.
-- **Report failures honestly** → `report(..., "failed", error=str(e))` so the
-  orchestrator can requeue or escalate. Silence reads as still-working.
-- **Artifacts are optional** → only upload when there's a real file; small
-  results go in `output`.
+- **No task available** — `pull` returns `{"task": null}`. Sleep and retry;
+  don't hammer the endpoint. Back off if the queue is persistently empty.
+- **Endpoint down** — catch the connection error, log it, retry with backoff.
+  The queue is durable; nothing is lost while you're offline.
+- **Don't double-execute** — always use `pull` (which atomically claims the
+  task). Two workers can't grab the same task.
+- **Report failures honestly** — `mc.report(tid, "failed", error=str(e))` so
+  the orchestrator can requeue or escalate. Silence reads as still-working.
+- **Artifacts are optional** — small results go in `output`; only upload a
+  file when there's a real artifact.
 
 ---
 
-## 9. Quick self-test for a new agent
+## Quick self-test for a new key
 
 Before trusting a fresh key, verify the round-trip:
 
 ```python
 mc = MeshClient(BASE, KEY)
-print(mc.health())                 # endpoint up?
-print(mc.me())                     # who am I, what role?
-print(mc.checkin())                # heartbeat lands?
-print(mc.pull())                   # None is fine (empty queue)
+print(mc.health())      # endpoint up?
+print(mc.me())          # correct identity and role?
+print(mc.checkin())     # heartbeat lands?
+print(mc.pull())        # None is fine (empty queue)
 ```
 
-If `me()` 403s, the key is wrong or revoked. If `health()` fails, check the
-service (`systemctl --user status agent-mesh`) and the base URL/port.
+If `me()` returns 403, the key is wrong or revoked. If `health()` fails,
+check the service (`systemctl --user status agent-mesh`) and the base URL.

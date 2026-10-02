@@ -1,15 +1,14 @@
 # agent-mesh — API-based agent org endpoint
 
-Version: 0.7 (2026-10-02)
+Version: 0.9
 Status: contract-first — this file is the source of truth; code conforms to it.
 
 ## What it is
 
 A single portable Python module (`mesh_server.py`) that exposes an HTTP API so
 agents in a development organization can **check in, get work, report status,
-and upload results**. It replaces ad-hoc relay chatter as the *work* channel:
-the relay stays for human/social traffic and emergency pings; all task flow
-goes through this endpoint.
+and upload results**. All task coordination — dispatch, progress, results,
+artifacts, A2A peer messaging — goes through this endpoint over plain HTTP.
 
 Design goals:
 - **Portable**: one file + stdlib only (Python ≥3.9). Drop into any agent box,
@@ -146,7 +145,7 @@ HTTP status (401 bad/missing key, 403 role-forbidden, 404 unknown id,
 | POST | `/api/agents/register` | admin | Create agent with a chosen role + return plaintext key ONCE. Body: `{name, role, caps?}`. **`name` must be unique** (case-insensitive); duplicates are rejected with 422. |
 | GET | `/api/agents` | agent | List agents (id, name, role, status, last_seen). No keys. |
 | GET | `/api/agents/me` | agent | Caller's own record. |
-| POST | `/api/agents/checkin` | agent | Heartbeat. Updates `last_seen`, sets `online`. Body optional: `{load?, queue_depth?}`. Returns current time + pending task count for caller. |
+| POST | `/api/agents/checkin` | agent | Heartbeat. Updates `last_seen`, sets `online`. Body optional: `{load?, queue_depth?}`. Returns enriched response: `{ok, ts, pending_tasks, role, agent_id, unread_messages, orders}`. `orders` describes the agent's current assignment (`{task_id, title, kind, status, project_id, spec, instruction}`) or an idle message — so remote agents receive explicit instructions on every heartbeat. |
 | PATCH | `/api/agents/me` | agent | Update own `caps`/`name`. Role changes require admin. |
 | DELETE | `/api/agents/{id}` | admin | Disable/remove agent. Revokes its key. |
 
@@ -236,11 +235,26 @@ Protected by `Authorization: Bearer <ADMIN_TOKEN>`.
 | POST | `/api/admin/join-key` | Issue/rotate the join key guests present to `/api/agents/join`. Returns plaintext once (stored hashed). |
 | GET | `/api/admin/stats` | Org-wide counters: agents by role, tasks by status, throughput. |
 
-### Web UI
+### Node (guest) chat
+Available on any node mode. Uses a plain `mesh_` agent key — no admin cap required.
+Shares the same underlying broadcast channel as the admin chat page.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/node/ping` | none | `{"ok":true,"version":"0.9","mode":"master"|"guest"}` — connectivity check and mode discovery. |
+| GET | `/api/node/chat` | agent | Chat history (oldest-first). `?limit=` up to 500 (default 100). Returns `{messages:[…]}`. |
+| POST | `/api/node/chat` | agent | Post to the shared broadcast channel. Body: `{text, sender_name?}`. Returns saved message. |
+| GET | `/api/node/chat/stream` | agent (Bearer or `?token=`) | SSE stream of live chat messages. `event:hello` on connect; `event:message` for each new message. Keepalive comment every 15s. |
+| GET | `/node-chat` | none | Standalone guest chat page (HTML). **Only served when `--mode guest`**; returns 404 on master nodes. |
+
+The `/node-chat` page auto-fills the master URL and agent key from `localStorage`
+(persisted after first login) and supports `?base=<url>&key=<mesh_…>` URL
+params for scripted setup. See OPERATIONS.md §9 for the full setup guide.
+
+### Web UI (master mode only)
 | Route | Description |
 |---|---|
-| GET `/` | Admin dashboard (HTML). Prompts for admin token (stored in sessionStorage). Multi-page: Dashboard · Projects · Agents · Tasks (+ per-task detail w/ inline review) · Events · Artifacts. Updates **instantly** via SSE. |
-| GET `/static/...` | Inline-served CSS/JS (no build step). |
+| GET `/` | Admin dashboard (HTML). Prompts for admin token (stored in sessionStorage). Multi-page: Dashboard · Projects · Agents · Tasks · Events · Artifacts · Settings · Chat. Updates **instantly** via SSE. Hidden (`404`) when running in `--mode guest`. |
 
 The web UI is the ONLY place keys are created/revoked visually. It calls the
 `/api/admin/*` endpoints with the admin token.
@@ -283,19 +297,23 @@ RestartSec=3
 WantedBy=default.target
 ```
 
-## Relationship to A2A-over-relay
+## A2A concept mapping
 
-This endpoint is the **work channel**; the relay A2A protocol remains the
-**social/emergency channel**. Mapping:
-- A2A `task.dispatch` ≈ `POST /api/tasks` + `GET /api/work/pull`
-- A2A `task.progress` ≈ `POST /api/tasks/{id}/progress`
-- A2A `task.result` ≈ `POST /api/tasks/{id}/result` (+ artifact upload)
-- A2A `hello`/`heartbeat` ≈ `POST /api/agents/checkin`
-- A2A `note` (freeform) → stays on the relay, NOT here.
+If you're familiar with A2A envelope semantics, here's how they map to
+agent-mesh HTTP calls:
 
-An orchestrator on a VPS runs this server; workers on each box poll
-`/api/work/pull`. Relay is used to announce "new orchestrator online at
-<url>" and for anything conversational.
+| A2A concept | agent-mesh equivalent |
+|---|---|
+| `hello` / `heartbeat` | `POST /api/agents/checkin` |
+| `task.dispatch` | `POST /api/tasks` (orch) + `GET /api/work/pull` (worker) |
+| `task.progress` | `POST /api/tasks/{id}/progress` |
+| `task.result` | `POST /api/tasks/{id}/result` (+ `POST /api/artifacts`) |
+| `task.cancel` | `POST /api/tasks/{id}/cancel` |
+| peer message (`note`) | `POST /api/messages` (native A2A inbox, §A2A Messaging) |
+
+An orchestrator runs this server; workers on each box poll `/api/work/pull`.
+Freeform peer-to-peer coordination uses the native A2A inbox (`/api/messages`)
+rather than any external channel.
 
 ## Non-goals / scope notes
 
@@ -303,12 +321,98 @@ An orchestrator on a VPS runs this server; workers on each box poll
 - No TLS of its own (run behind a reverse proxy / tailscale if exposing — see
   REMOTE-DEPLOY.md).
 - No built-in LLM logic — this is pure coordination plumbing. (The autonomous
-  orchestrator watchdog, when used, is a *Hermes cron job* that drives this API;
-  the LLM lives outside the server.)
+  orchestrator watchdog, when used, is a *scheduled script* (cron, systemd
+  timer, cloud scheduler, etc.) that drives this API; the LLM lives outside
+  the server.)
 - Deliberately simple auth (Bearer keys + one admin token). It's coordination
   plumbing for a trusted internal org, not a hardened public SaaS — no rate
   limiting, no brute-force lockout. See ADMIN.md §7 before exposing publicly.
 
-**Already in** (don't treat as future work): A2A peer messaging, projects,
-swarm-view + reassign (active orchestration), SSE instant console updates,
-`--base-path` reverse-proxy mounting, and platform-agnostic portability.
+**Already in v0.9** (not future work): A2A peer messaging, projects with
+auto-planning and auto-delegation, swarm-view + reassign, SSE instant console
+updates, `--base-path` reverse-proxy mounting, platform-agnostic portability,
+enriched checkin with orders, configurable artifact targets (local / GitHub /
+ADO), storage migration endpoint, dark-themed console with sidebar nav, and
+context-aware help modal.
+
+---
+
+## Auto-planning & delegation (v0.8+)
+
+### Project → planning task (automatic)
+
+When a project is created (`POST /api/projects`), the server automatically:
+1. Finds the best available `planner` (or `orchestrator`) agent.
+2. Creates a `kind=planning` task titled `Plan: <project name>`, priority 1,
+   assigned to that agent.
+3. Sends the planner an A2A `task.dispatch` message announcing the assignment.
+
+The planning task's `spec.instructions` tells the planner what to do: decompose
+the project into concrete tasks and submit the plan as `output.tasks` in the
+result.
+
+### Planning result → delegated tasks (automatic)
+
+When a planning task (`kind=planning`) is submitted with `status=ok` and the
+result's `output.tasks` is a non-empty list, the server auto-creates the
+described tasks:
+
+```json
+{
+  "status": "ok",
+  "output": {
+    "tasks": [
+      { "title": "Build API", "kind": "code", "priority": 2, "spec": {...}, "role": "worker" },
+      { "title": "Write tests", "kind": "test", "priority": 3, "spec": {...}, "role": "qa" },
+      { "title": "Review PR",  "kind": "review","priority": 4, "spec": {...}, "role": "review" }
+    ]
+  }
+}
+```
+
+Each task object may contain: `title` (required), `kind`, `priority`, `spec`,
+`role` (preferred role for auto-assignment), `assigned_to` (explicit agent id,
+overrides auto-assignment). The server assigns each task to the best available
+agent for the requested role (online-first).
+
+Role → agent priority mapping:
+| kind / role | tries in order |
+|---|---|
+| `code` | worker → planner → orchestrator |
+| `test` / `qa` | qa → worker |
+| `review` | reviewer → qa → orchestrator |
+| `docs` / `research` / `ops` | worker → planner |
+| `planning` | planner → orchestrator |
+| `generic` | worker → planner |
+
+---
+
+## Artifact targets (v0.8+)
+
+Artifact targets configure where uploaded artifacts are pushed after local
+storage. The local artifacts directory is always the primary store; targets
+add optional external push destinations.
+
+### Target types
+
+| Type | Required config fields | Description |
+|---|---|---|
+| `github` | `token`, `repo` (owner/repo), `branch` (default: main), `path` (default: artifacts/) | Commits artifact as a file to the specified GitHub repo via the GitHub REST API. |
+| `ado` | `pat`, `org`, `project`, `feed` | Uploads artifact as a Universal Package to an Azure DevOps Artifacts feed. |
+| `local` | `local_path` (optional) | Extra local copy (e.g. a mounted network share). |
+
+Secrets (`token`, `pat`) are stored server-side and **never returned in plaintext**
+— they appear as `***` in API responses. To update a secret, PATCH the target
+with the new value; sending `***` preserves the existing stored value.
+
+Push is **asynchronous** — the upload response returns immediately; push results
+are logged as `artifact.pushed` or `artifact.push_failed` events.
+
+### Endpoints
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/admin/artifact-targets` | admin | List all targets. |
+| POST | `/api/admin/artifact-targets` | admin | Create target. Body: `{name, type, config}`. |
+| PATCH | `/api/admin/artifact-targets/{id}` | admin | Update target. Body: `{name?, type?, config?, enabled?}`. |
+| DELETE | `/api/admin/artifact-targets/{id}` | admin | Delete target. |

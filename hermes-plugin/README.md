@@ -1,4 +1,9 @@
-# agent-mesh — Hermes Dashboard Control Panel
+# agent-mesh — Hermes Dashboard Adapter (optional)
+
+> **This is a Hermes-specific adapter.** It is not required for any other
+> agent platform. The agent-mesh web console (`http://<host>:4850/`) works on
+> its own for all platforms. Install this only if you run a Hermes dashboard
+> and want a native tab for it.
 
 A native tab in the Hermes web portal / desktop app that shows your local
 agent-mesh swarm: live status, agents, projects, tasks, and events. Built as a

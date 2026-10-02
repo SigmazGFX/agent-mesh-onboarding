@@ -1,4 +1,4 @@
-# agent-mesh — Administrator's Manual
+# agent-mesh — Administrator's Manual — v0.9
 
 The complete reference for the human who runs and governs an agent-mesh swarm:
 credentials, the console, roles, join keys, security, recovery, and day-to-day
@@ -122,9 +122,11 @@ person). Anyone holding it has full administrative control of the swarm.
 
 ## 4. The console, page by page
 
-Unlock at the console URL. Top nav: **Dashboard · Projects · Agents · Tasks ·
-Events · Artifacts**. Updates **instantly** via Server-Sent Events (a 5s poll
-remains as a fallback if the stream drops). A **lock** button signs out.
+Unlock at the console URL. Left sidebar nav: **Dashboard · Projects · Agents · Tasks ·
+Events · Artifacts · Settings · Chat**. Updates **instantly** via
+Server-Sent Events (a 5s poll remains as a fallback if the stream drops).
+A **Lock** button signs out, a **? Help** button opens context-aware help
+for the current page.
 
 ### Dashboard
 Stat tiles (queued / active / done / failed / agents-by-role), recent tasks, and
@@ -172,7 +174,47 @@ Two cards:
 Each project card has **mark done / cancel** (status changes, keep the record)
 and, for admins, a **delete** button that permanently removes the project, all
 its tasks, and their artifacts. Use delete to prune finished projects from the
-board.
+board. Projects also have a **⎇ Migrate storage…** button (admin only) that
+lets you move all of a project's artifacts from local storage to GitHub or
+Azure DevOps — it validates credentials first, then copies artifacts, then
+updates the project's storage target.
+
+### Settings
+Configure **artifact targets** — where uploaded artifacts are pushed after
+local storage. Supported targets:
+- **Local** — extra copy to a local path (e.g. a mounted share)
+- **GitHub** — commits the file to a repo via the GitHub REST API (requires a
+  PAT with `repo` scope)
+- **Azure DevOps** — uploads as a Universal Package to an Artifacts feed
+  (requires a PAT with `Packaging: Read & Write`)
+
+Secrets (`token`, `PAT`) are stored server-side and never returned in
+plaintext — they appear as `***` in the UI. To rotate a secret, PATCH the
+target with the new value; leaving the field blank or sending `***` preserves
+the existing stored value.
+
+### Chat (Admin Chat)
+A broadcast channel visible to all admin console users and any guest node
+running in guest mode. Messages are persisted in the database and survive
+restarts.
+
+**Who can post:**
+- Any admin token holder (via the console Chat page)
+- Any agent key with the **admin cap** (via the console)
+- Any registered `mesh_` agent key — even without admin cap — via the API
+  (useful for remote monitoring scripts posting status alerts)
+
+**Guest node operators** chat through the separate `/node-chat` page served
+on each guest box running `--mode guest` — they never need the admin token.
+See OPERATIONS.md §Guest node chat for setup.
+
+**Posting via API (no console):**
+```bash
+curl -X POST https://your-master/api/node/chat \
+  -H "Authorization: Bearer mesh_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Worker node 3 degraded — restarting","sender_name":"Node 3"}'
+```
 
 ### Events
 Full audit log with actor / type / task-id filters. Every state change is
@@ -315,16 +357,21 @@ Config locations:
 
 ---
 
-## 10. Roadmap / known gaps
+## 10. Known limitations / potential future work
 
-- **In-console admin-token rotation** (authenticated by current token) so you
-  never have to edit files to rotate.
-- **Named-admin login** (username + password) as an alternative to the single
-  shared bearer secret, if you want distinct admin identities.
-- Rate limiting / basic brute-force lockout on auth endpoints (if exposed).
-- Multi-tenant isolation (one org per instance today).
+The following are out of scope today (by design, not oversight):
 
-Already shipped (not open items): SSE instant console updates (`GET /api/stream`),
-A2A peer messaging, projects, swarm-view + reassign, `--base-path` proxy
-mounting, platform-agnostic portability, and the autonomous orchestrator
-watchdog (see ORCHESTRATOR.md).
+- **In-console admin-token rotation** — rotate by editing
+  `~/.local/state/agent-mesh/admin_token` and restarting the service.
+- **Named-admin login** (username + password) — the single shared bearer
+  token is sufficient for a trusted internal org.
+- **Rate limiting / brute-force lockout** — see §7 for the recommended
+  approach (WAF/throttle in front).
+- **Multi-tenant isolation** — one org per instance; run multiple instances
+  for multiple orgs.
+
+**Shipped (all available in v0.9):** dark-themed web console, SSE instant
+updates, A2A peer messaging, projects with auto-planning and delegation, storage
+migration to GitHub/ADO, swarm-view + reassign, artifact targets, `--base-path`
+proxy mounting, context-aware help modal, join-key modal (no `prompt()`),
+platform-agnostic portability, and the autonomous orchestrator watchdog.

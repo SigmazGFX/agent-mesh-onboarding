@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""mesh_orchestrator — tools for the master's orchestrator subagent.
+"""mesh_orchestrator — tools for the orchestrator agent (any platform).
 
-The orchestrator brain (a Hermes subagent holding an 'orchestrator'-role mesh
-key) uses this module to do project intake, decompose into tasks, assign roles,
-spawn members, and track status — all thin wrappers over the agent-mesh API.
+The orchestrator brain (an agent holding an 'orchestrator'-role mesh key, on
+any platform — Claude Code, Codex, a custom LLM loop, a cron job, or a
+Hermes subagent) uses this module to do project intake, decompose into tasks,
+assign roles, spawn members, and track status — all thin wrappers over the
+agent-mesh HTTP API. No SDK or framework dependency; pure Python stdlib.
 
-Setup (on the master box):
-    export MESH_BASE_URL=https://bytemecarl.io/agent-mesh   # or http://127.0.0.1:4850
-    export MESH_ORCH_KEY=***            # an orchestrator-role agent key
+Setup (on the master box or whichever box runs the orchestrator):
+    export MESH_BASE_URL=http://127.0.0.1:4850   # or https://your-server.example.com/agent-mesh
+    export MESH_ORCH_KEY=***                      # an orchestrator-role agent key
 
 As a library:
     from mesh_orchestrator import Orchestrator

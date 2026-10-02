@@ -1,4 +1,4 @@
-# agent-mesh — Operator's Manual
+# agent-mesh — Operator's Manual — v0.9
 
 How to deploy, run, secure, and operate the agent org work endpoint.
 The API contract lives in [`SCHEMA.md`](SCHEMA.md); this is the runbook.
@@ -9,8 +9,8 @@ The API contract lives in [`SCHEMA.md`](SCHEMA.md); this is the runbook.
 
 `agent-mesh` is a single-file HTTP server that lets agents in a development
 organization **check in, get work, report status, and upload results** through
-a role-gated REST API. It is the *work channel* for the org; the omarchy-relay
-A2A protocol stays the *social/emergency* channel.
+a role-gated REST API. It is the self-contained work channel for the org —
+all task coordination happens here, over plain HTTP with Bearer auth.
 
 - One file (`mesh_server.py`), Python ≥3.9 **standard library only** — no venv,
   no pip, no build step. That's what makes it portable.
@@ -259,7 +259,7 @@ Task lifecycle:
 `rejected` task can be `requeue`d by an orchestrator/planner.
 
 Typical org wiring:
-- **Orchestrator** (e.g. the future VPS Hermes) creates tasks, watches the board.
+- **Orchestrator** (any agent with orchestrator role) creates tasks, watches the board.
 - **Planners** break big work into tasks too.
 - **Workers** (Haans, Harry, …) pull and execute.
 - **QA / reviewer** approve or reject finished work.
@@ -342,20 +342,111 @@ fresh admin token is printed.
 
 ---
 
-## 9. Roadmap / non-goals
+## 9. Guest node chat
 
-Deliberately out of scope for now (add when needed):
-- Multi-tenant isolation (one org per instance).
-- Built-in TLS (terminate upstream if exposing).
-- Rate limiting / brute-force lockout (trusted-org scope; see ADMIN.md §7).
-- LLM logic in the server — this is pure coordination plumbing. (The autonomous
-  orchestrator watchdog is a Hermes cron job that *drives* this API; the LLM
-  lives outside the server.)
+Guest node operators (humans sitting at a worker box) can access a lightweight
+browser-based chat interface that connects to the master's shared broadcast
+channel — the same feed visible in the admin console's Chat page. They do not
+need the admin token or any admin privileges.
 
-Already shipped: SSE instant console updates, A2A peer messaging, projects,
-swarm-view + reassign, `--base-path` proxy mounting, platform-agnostic
-portability. See SCHEMA.md for the full contract.
+### How it works
 
-Natural next steps once the VPS orchestrator lands: run the server on the VPS,
-expose it over tailscale, register each box's agent as a worker, and point the
-relay at it for announcements ("new orchestrator online at <url>").
+The `mesh_server.py` running on the **master** exposes:
+
+| Endpoint | Auth | What |
+|---|---|---|
+| `GET /node-chat` | None (public page) | Guest chat UI (only available on `--mode guest` installs of a separate local relay; see below) |
+| `GET /api/node/ping` | None | Connectivity check + server mode |
+| `GET /api/node/chat` | Any `mesh_` key | Chat history (last 200 messages) |
+| `POST /api/node/chat` | Any `mesh_` key | Post a message to the shared channel |
+| `GET /api/node/chat/stream` | Any `mesh_` key | SSE live feed of new messages |
+
+### Option A — Point a browser directly at the master
+
+A guest node operator can open `https://your-master/agent-mesh/node-chat`
+**only if** the master is configured in guest mode (`--mode guest`). Because
+a master node should never expose the guest chat page (it runs the admin
+console instead), the typical production setup is Option B.
+
+### Option B — Run a local relay on the guest box (recommended)
+
+On each **guest box**, run a second lightweight instance of `mesh_server.py`
+in `--mode guest`. It has no admin token and no state of its own — it just
+serves the `/node-chat` page locally. The guest operator opens
+`http://localhost:4851/node-chat` in their browser, enters their `mesh_` key
+and the master's URL, and connects.
+
+```bash
+# On the guest box — start the local chat relay:
+python3 mesh_server.py \
+    --port 4851 \
+    --data /tmp/node-chat-relay \
+    --mode guest
+
+# Then open in any browser on that box:
+# http://localhost:4851/node-chat
+```
+
+To auto-start as a systemd user service on the guest box:
+
+```ini
+# ~/.config/systemd/user/mesh-node-chat.service
+[Unit]
+Description=agent-mesh guest node chat relay
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/agent-mesh/mesh_server.py \
+    --port 4851 --data /tmp/node-chat-relay --mode guest
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now mesh-node-chat
+```
+
+### The login experience
+
+When the guest opens `http://localhost:4851/node-chat`:
+
+1. The page shows a login card with two fields: **Master URL** and **Agent API Key**.
+2. Both are **auto-filled** from `localStorage` if the user has connected before.
+3. They can also be pre-filled via URL params: `http://localhost:4851/node-chat?base=https://master&key=mesh_...`
+4. On connect, the page verifies the key against the master (`GET /api/agents/me`),
+   displays the agent's name and role, and opens the live SSE chat stream.
+5. The key is stored in `localStorage` so subsequent visits connect automatically.
+
+The user's `mesh_` key is in `~/.config/agent-mesh/config.json` (or in the
+env var `MESH_API_KEY`). The page's hint text points them there.
+
+### What guest chat can and cannot do
+
+| Can do | Cannot do |
+|---|---|
+| Read the shared broadcast channel | Access the admin console |
+| Post messages to the channel | See tasks, agents, artifacts, events |
+| See all history (last 200 messages) | Manage keys or roles |
+| Auto-reconnect on disconnect | Approve/reject work |
+
+The guest chat is intentionally narrow — it's an intercom, not a console.
+
+## 10. Non-goals (by design)
+
+- **Multi-tenant isolation** — one org per instance; run separate instances
+  for separate orgs.
+- **Built-in TLS** — terminate at the reverse proxy. See REMOTE-DEPLOY.md.
+- **Rate limiting / brute-force lockout** — trusted internal org scope.
+  Add a WAF/throttle in front before exposing publicly (see ADMIN.md §7).
+- **LLM logic in the server** — this is pure coordination plumbing. The LLM
+  lives in the agents; the server routes their work.
+
+**Shipped in v0.9:** dark-themed console with sidebar nav, SSE instant updates,
+A2A peer messaging, projects with auto-planning, swarm-view + reassign, artifact
+targets (local / GitHub / ADO), storage migration, `--base-path` proxy mounting,
+context-aware help, join-key modal. See SCHEMA.md for the full API contract.

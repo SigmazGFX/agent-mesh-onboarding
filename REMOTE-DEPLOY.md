@@ -1,29 +1,27 @@
-# Deploying agent-mesh on a remote Hermes box (e.g. bytemecarl.io)
+# Deploying agent-mesh behind a reverse proxy (shared domain) — v0.9
 
-> **Deciding whether/ how to expose it to the internet?** Read
+> **Deciding whether / how to expose it to the internet?** Read
 > [`EXPOSURE.md`](EXPOSURE.md) first — it's the implementer's guide with the
 > decision framework, security checklist, and the tailscale option. This file is
 > the *how-to* for the reverse-proxy path specifically.
 
 This module is **portable**: one file (`mesh_server.py`), Python ≥3.9 standard
 library only, no venv/pip. It's designed to run **behind an existing reverse
-proxy** as a path-prefixed sub-app, so it can share a domain with another app
-(like a Hermes web portal) without fighting over ports or auth.
+proxy** as a path-prefixed sub-app, so it can share a domain with another
+application without fighting over ports or auth.
 
 ## The target shape
 
-You want agents to call something like:
+You want agents to call:
 
 ```
-https://bytemecarl.io/api/agents
-https://bytemecarl.io/api/work/pull
-...
+https://your-server.example.com/agent-mesh/api/agents
+https://your-server.example.com/agent-mesh/api/work/pull
 ```
 
-Note: `bytemecarl.io` already runs its own uvicorn app with **cookie-based**
-auth (`/api/agents` there returns `401 no_cookie`). agent-mesh uses **Bearer
-API-key** auth — a completely different scheme. So you have two clean options;
-pick based on how much you want to touch the existing proxy.
+Replace `your-server.example.com` with your actual domain or IP. The
+`/agent-mesh` path prefix keeps it completely isolated from anything else on
+the same domain — no routing conflicts, no auth conflicts.
 
 ---
 
@@ -85,14 +83,16 @@ location /agent-mesh/ {
 
 After this, agents talk to:
 ```
-https://bytemecarl.io/agent-mesh/api/agents
-https://bytemecarl.io/agent-mesh/api/work/pull
+https://your-server.example.com/agent-mesh/api/agents
+https://your-server.example.com/agent-mesh/api/work/pull
 ```
-and the console is at `https://bytemecarl.io/agent-mesh/`. The UI auto-detects
-its base path (injected as `BASE`), so all its calls and download links are
-correct with no client changes.
+and the console is at `https://your-server.example.com/agent-mesh/`. The UI
+auto-detects its base path (injected as `BASE`), so all its calls and download
+links are correct with no client changes.
 
-### 3. Make it persistent (systemd user service)
+### 3. Make it persistent
+
+**systemd user service** (Linux):
 
 `~/.config/systemd/user/agent-mesh.service`:
 ```ini
@@ -102,8 +102,9 @@ After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=%h/.hermes/.env        # supplies MESH_ADMIN_TOKEN
-ExecStart=/usr/bin/python3 %h/Work/agent-mesh/mesh_server.py \
+# Supply MESH_ADMIN_TOKEN here if you want to pin a token instead of using the auto-generated one.
+# EnvironmentFile=%h/.config/agent-mesh/env
+ExecStart=/usr/bin/python3 %h/agent-mesh/mesh_server.py \
     --data %h/.local/state/agent-mesh --host 127.0.0.1 --port 4850 \
     --base-path /agent-mesh
 Restart=on-failure
@@ -118,35 +119,47 @@ systemctl --user enable --now agent-mesh
 journalctl --user -u agent-mesh -f
 ```
 
+**macOS launchd / Windows Task Scheduler / Docker:** run
+`python3 mesh_server.py --data <dir> --port 4850 --base-path /agent-mesh`
+as a persistent service in whatever way your platform supports.
+
 ---
 
 ## Option B — expose at the domain root (`/api/...` directly)
 
-If you'd rather have agents call `https://bytemecarl.io/api/agents` with **no
-prefix**, you must make sure those paths don't collide with the existing app.
-That means either (a) the existing app doesn't actually use `/api/agents`, or
-(b) you move/rename the existing app's conflicting routes. Then run mesh with
-**no** `--base-path` and proxy `/api/*` (or `/`) to it. This is more invasive —
-prefer Option A unless you've confirmed the path is free.
-
-> If you go this route, the existing portal's cookie-auth and mesh's Bearer
-> auth coexist fine because they're separate backends behind separate location
-> rules — but you own the routing decision, so verify the split carefully.
+If you'd rather have agents call `https://your-server.example.com/api/agents`
+with **no prefix**, you must make sure those paths don't collide with any
+existing app on the same domain. Run mesh with **no** `--base-path` and proxy
+`/api/*` (or `/`) to it. This is more invasive — prefer Option A unless you've
+confirmed the path space is free.
 
 ---
 
 ## Onboarding agents (same on any box)
 
-1. Open the console (`https://bytemecarl.io/agent-mesh/`), unlock with the admin
-   token.
+1. Open the console (`https://your-server.example.com/agent-mesh/`), unlock
+   with the admin token.
 2. Register each agent: name + role (+ optional **admin cap** for console
    access). Copy the one-time API key.
-3. Give the key to the agent. It talks plain HTTP Bearer to the base URL:
+3. Give the key to the agent. It talks plain HTTP Bearer to the base URL — no
+   SDK required; any language or runtime works:
 
+```bash
+BASE=https://your-server.example.com/agent-mesh
+KEY=mesh_YOUR_KEY
+
+# Checkin
+curl -s $BASE/api/agents/checkin -X POST -H "Authorization: Bearer $KEY" -d '{}'
+
+# Pull next assigned task
+curl -s $BASE/api/work/pull -H "Authorization: Bearer $KEY"
+```
+
+Or use the bundled Python client:
 ```python
 import sys; sys.path.insert(0, "/path/to/agent-mesh")
 from mesh_server import MeshClient
-mc = MeshClient("https://bytemecarl.io/agent-mesh", "mesh_...")
+mc = MeshClient("https://your-server.example.com/agent-mesh", "mesh_...")
 mc.checkin(); task = mc.pull()
 ```
 
@@ -167,7 +180,8 @@ grant/revoke the admin cap, rekey/revoke.
 ## Quick smoke test after deploy
 
 ```bash
-curl -s https://bytemecarl.io/agent-mesh/api/health
-# {"ok": true, "version": "0.1", ...}
-curl -s https://bytemecarl.io/agent-mesh/api/agents -H "Authorization: Bearer <agent-key>"
+curl -s https://your-server.example.com/agent-mesh/api/health
+# {"ok": true, "version": "0.9", ...}
+curl -s https://your-server.example.com/agent-mesh/api/agents \
+     -H "Authorization: Bearer <agent-key>"
 ```

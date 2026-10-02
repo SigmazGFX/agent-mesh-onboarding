@@ -1,4 +1,4 @@
-# Exposing agent-mesh to the internet — Master Implementer's Guide
+# Exposing agent-mesh to the internet — Master Implementer's Guide — v0.9
 
 This is for the person who runs the **master** node and wants agents on *other
 boxes* (or humans from other networks) to reach the swarm over the internet.
@@ -145,7 +145,7 @@ location /agent-mesh/ {
 
 ```bash
 curl -s https://yourdomain.com/agent-mesh/api/health
-# {"ok": true, "version": "0.7", "agents": N, "tasks_queued": N}
+# {"ok": true, "version": "0.9", "agents": N, "tasks_queued": N}
 
 curl -s https://yourdomain.com/agent-mesh/api/agents \
      -H "Authorization: Bearer ***"
