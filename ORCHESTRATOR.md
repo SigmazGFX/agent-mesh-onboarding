@@ -66,11 +66,17 @@ Do this, in order:
    parallel using delegate_task subagents, but YOU own the final task list.
 4. STAFF — Check existing members (python3 mesh_orchestrator.py members). Spawn
    what's missing (e.g. a qa member): python3 mesh_orchestrator.py spawn-member "qa-bot" --role qa
-5. DISPATCH — For each task:
-   python3 mesh_orchestrator.py add-task <project_id> "<title>" --kind code --priority N --spec '{...}' [--assignee <id>]
-   Assign to a capable member where obvious; leave unassigned for open pull.
-6. TRACK — Poll status (python3 mesh_orchestrator.py project-status <project_id>).
-   Requeue failures if the spec was fixable; report blockers.
+5. DISPATCH — For each task, ASSIGN it to a specific capable member:
+   python3 mesh_orchestrator.py add-task <project_id> "<title>" --kind code --priority N --spec '{...}' --assignee <agent_id>
+   Workers only pull tasks assigned to THEM (they can't grab arbitrary queue
+   items), so always set --assignee. Leave unassigned only if you intend to
+   dispatch it yourself later.
+6. TRACK — Keep your attention on the project by polling the SWARM VIEW:
+   python3 mesh_orchestrator.py swarm-view
+   This shows who's online, what each agent is currently doing, who's idle,
+   and what work is still unassigned. Act on it: assign unassigned tasks to
+   idle agents, requeue fixable failures, message offline agents. Goal: nobody
+   idles while work remains. Also poll project-status for overall progress.
 7. REPORT — When done (or when you've made all progress you can), summarize:
    project id, task breakdown, who did what, current status, and next actions.
 

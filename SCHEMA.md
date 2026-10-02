@@ -40,9 +40,12 @@ Base URL: `http://127.0.0.1:4850` (override with env `MESH_PORT`). Binds
 
 Rules enforced server-side:
 - Only `orchestrator`/`planner` may create tasks via `POST /api/tasks`.
-- `GET /api/work/pull` returns tasks assigned to the caller's agent id (or
-  unassigned tasks if the caller's role allows claiming). Workers claim by
-  pulling; the task becomes `in_progress` under them.
+- **Assignment model:** the orchestrator assigns work; workers only execute
+  what is explicitly assigned to them. `GET /api/work/pull` returns ONLY tasks
+  where `assigned_to == caller` for workers/QA. Orchestrators/planners may also
+  pick up unassigned tasks (they're the ones dispatching). This stops agents
+  from grabbing arbitrary queue items. Unassigned tasks stay queued until the
+  orchestrator assigns them.
 - Only the assignee or a higher role may update/cancel a task.
 - `qa`/`reviewer` may transition a task to `approved`/`rejected` via
   `POST /api/tasks/{id}/review`.
@@ -153,7 +156,7 @@ HTTP status (401 bad/missing key, 403 role-forbidden, 404 unknown id,
 | POST | `/api/tasks` | orchestrator/planner | Create task. Body: `{title, kind, spec, priority?, deadline?, assigned_to?, retry?}`. Returns created task. |
 | GET | `/api/tasks` | agent | List tasks. Filters: `?status=`, `?assigned_to=`, `?created_by=`. |
 | GET | `/api/tasks/{id}` | agent | One task (must be related: creator, assignee, or higher role). |
-| GET | `/api/work/pull` | worker+ | Claim next eligible task for caller. Sets `assigned_to=caller`, status `claimed`. Returns task or `{"task": null}` if none. |
+| GET | `/api/work/pull` | worker+ | Claim next task **assigned to the caller** (workers/QA: only their own; orchestrator/planner: also unassigned). Sets `assigned_to=caller`, status `claimed`. Returns task or `{"task": null}` if none. |
 | POST | `/api/tasks/{id}/start` | assignee | `claimed → in_progress`. |
 | POST | `/api/tasks/{id}/progress` | assignee | Body: `{pct?, note?}`. Appends progress event. |
 | POST | `/api/tasks/{id}/result` | assignee | Body: `{status: ok\|failed\|partial, output?, error?}`. Sets `done`/`failed`. |
@@ -175,10 +178,11 @@ Created by orchestrator/planner; any authenticated agent can read.
 Tasks link to a project via `project_id` (set at creation; filter with
 `GET /api/tasks?project_id=…`).
 
-### Orchestrator (member spawning)
+### Orchestrator (member spawning + active management)
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/api/orch/spawn-member` | orchestrator/planner | Mint a NEW swarm member on demand. Body: `{name, role?, caps?}`. Returns the new agent + one-time key. A planner may only spawn `worker`/`observer`; only an orchestrator may spawn `qa`/`reviewer`/`orchestrator`. |
+| GET | `/api/orch/swarm-view` | orchestrator/planner | **Active-management view** for the master to keep its attention on the project: per-agent `{online, current_task, queued_for_them, idle}`, plus `unassigned_tasks` (needs dispatch), `idle_agents`, `offline_agents`, `tasks_by_status`. Poll this to assign unassigned work to idle agents so nobody idles. CLI: `mesh_orchestrator.py swarm-view`. |
 
 ### A2A Messaging (peer-to-peer over the mesh)
 Any authenticated agent can message any other mesh member — the peer-to-peer

@@ -294,16 +294,28 @@ class Store:
             args.append(tid)
             self.ex(f"UPDATE tasks SET {', '.join(sets)} WHERE id=?", args)
 
-    def next_pullable(self, caller_role):
-        """Next queued task a caller may claim: unassigned first, then own."""
-        if caller_role in CAP_PULL:
+    def next_pullable(self, caller_role, caller_id):
+        """Next queued task a caller may claim.
+
+        Assignment model: the ORCHESTRATOR assigns work; workers only execute
+        what is explicitly assigned to THEM. This stops agents from grabbing
+        arbitrary queue items (the 'took all the tasks and did nothing' bug).
+
+        - Workers/QA: only tasks where assigned_to == caller.
+        - Orchestrator/planner: may also pick up unassigned tasks (they're the
+          ones dispatching), so an orchestrator running its own worker loop can
+          drain work it created but forgot to assign.
+        """
+        if caller_role in ("orchestrator", "planner"):
             r = self.q1("SELECT * FROM tasks WHERE status='queued' AND "
-                        "(assigned_to IS NULL OR assigned_to='') "
-                        "ORDER BY priority ASC, created_at ASC LIMIT 1")
-            if r:
-                return r
-        return self.q1("SELECT * FROM tasks WHERE status='queued' "
-                       "ORDER BY priority ASC, created_at ASC LIMIT 1")
+                        "(assigned_to IS NULL OR assigned_to='' OR "
+                        "assigned_to=?) ORDER BY priority ASC, created_at ASC "
+                        "LIMIT 1", (caller_id,))
+            return r
+        # worker / qa: strictly their own assignments
+        return self.q1("SELECT * FROM tasks WHERE status='queued' AND "
+                       "assigned_to=? ORDER BY priority ASC, created_at ASC "
+                       "LIMIT 1", (caller_id,))
 
     def count_queued(self, assignee=None):
         if assignee:
@@ -621,6 +633,7 @@ class Handler(BaseHTTPRequestHandler):
         ("PATCH",  r"^/api/admin/agents/(?P<id>[^/]+)$",       "ep_admin_patch"),
         ("POST",   r"^/api/admin/join-key$",                   "ep_admin_joinkey"),
         ("POST",   r"^/api/orch/spawn-member$",                "ep_spawn_member"),
+        ("GET",    r"^/api/orch/swarm-view$",                  "ep_swarm_view"),
         ("GET",    r"^/api/messages$",                         "ep_inbox"),
         ("POST",   r"^/api/messages$",                         "ep_send_msg"),
         ("POST",   r"^/api/messages/(?P<id>[^/]+)/read$",      "ep_mark_read"),
@@ -911,7 +924,7 @@ class Handler(BaseHTTPRequestHandler):
     def ep_pull(self, g):
         agent = self._auth()
         self.mesh.require_role(agent, CAP_PULL, "pull work")
-        row = self.store.next_pullable(agent["role"])
+        row = self.store.next_pullable(agent["role"], agent["id"])
         if not row:
             self._send_json({"task": None})
             return
@@ -1205,6 +1218,47 @@ class Handler(BaseHTTPRequestHandler):
             "agents_total": len(agents), "agents_by_role": by_role,
             "tasks_total": total_tasks, "tasks_by_status": by_status,
             "completion_rate": round(done / total_tasks, 3) if total_tasks else 0,
+        })
+
+    def ep_swarm_view(self, g):
+        # Orchestrator's active-management view: who's online, what each agent
+        # is currently doing, what's unassigned (needs dispatch), and who's idle
+        # (online but no active task). This is what lets the master keep its
+        # attention on the project and keep agents busy instead of idle.
+        caller = self._auth()
+        self.mesh.require_role(caller, CAP_DISPATCH, "view swarm")
+        now = time.time()
+        agents = []
+        for a in self.store.list_agents():
+            online = (now - a["last_seen"]) <= HEARTBEAT_WINDOW_S
+            # what is this agent actively working on?
+            active = self.store.q1(
+                "SELECT id,title,status FROM tasks WHERE assigned_to=? AND "
+                "status IN ('claimed','in_progress') ORDER BY updated_at DESC "
+                "LIMIT 1", (a["id"],))
+            queued_for = self.store.count_queued(assignee=a["id"])
+            agents.append({
+                "id": a["id"], "name": a["name"], "role": a["role"],
+                "online": online,
+                "last_seen_s_ago": round(now - a["last_seen"]),
+                "current_task": ({"id": active["id"], "title": active["title"],
+                                  "status": active["status"]} if active else None),
+                "queued_for_them": queued_for,
+                "idle": online and not active and queued_for == 0,
+            })
+        # work awaiting assignment (the orchestrator should dispatch these)
+        unassigned = self.store.q(
+            "SELECT id,title,priority,project_id FROM tasks WHERE status='queued' "
+            "AND (assigned_to IS NULL OR assigned_to='') "
+            "ORDER BY priority ASC, created_at ASC LIMIT 50")
+        by_status = {r["status"]: r["n"] for r in self.store.q(
+            "SELECT status, COUNT(*) n FROM tasks GROUP BY status")}
+        self._send_json({
+            "agents": agents,
+            "unassigned_tasks": [dict(r) for r in unassigned],
+            "tasks_by_status": by_status,
+            "idle_agents": [a["id"] for a in agents if a["idle"]],
+            "offline_agents": [a["id"] for a in agents if not a["online"]],
         })
 
     def ep_admin_joinkey(self, g):

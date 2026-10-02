@@ -131,6 +131,13 @@ class Orchestrator:
     def members(self):
         return self._call("GET", "/api/agents")["items"]
 
+    # -- active swarm management
+    def swarm_view(self):
+        """Who's online, what each agent is doing, what's unassigned, who's idle.
+        The orchestrator polls this to keep its attention on the project and
+        keep agents busy (assign unassigned work to idle agents)."""
+        return self._call("GET", "/api/orch/swarm-view")
+
     # -- reporting
     def project_status(self, pid):
         p = self.get_project(pid)
@@ -166,6 +173,7 @@ def _cli():
     p = sub.add_parser("assign-role"); p.add_argument("agent_id"); p.add_argument("role")
     sub.add_parser("members")
     p = sub.add_parser("project-status"); p.add_argument("project_id")
+    sub.add_parser("swarm-view", help="who's online/working/idle + unassigned work")
     args = ap.parse_args()
 
     o = Orchestrator()
@@ -191,6 +199,8 @@ def _cli():
         out = o.members()
     elif args.cmd == "project-status":
         out = o.project_status(args.project_id)
+    elif args.cmd == "swarm-view":
+        out = o.swarm_view()
     print(json.dumps(out, indent=2))
 
 
