@@ -26,6 +26,7 @@ from urllib.parse import urlparse, parse_qs
 
 VERSION = "0.1"
 HEARTBEAT_WINDOW_S = 90          # seen within this window => online
+STALE_TASK_S = 300               # assigned task untouched for this long => stale (reassign candidate)
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024   # 200 MB per artifact
 ROLES = ("orchestrator", "planner", "worker", "qa", "reviewer", "observer")
 ROLE_RANK = {r: i for i, r in enumerate(
@@ -623,6 +624,7 @@ class Handler(BaseHTTPRequestHandler):
         ("POST",   r"^/api/tasks/(?P<id>[^/]+)/cancel$",       "ep_cancel"),
         ("POST",   r"^/api/tasks/(?P<id>[^/]+)/review$",       "ep_review"),
         ("POST",   r"^/api/tasks/(?P<id>[^/]+)/requeue$",      "ep_requeue"),
+        ("POST",   r"^/api/tasks/(?P<id>[^/]+)/reassign$",     "ep_reassign"),
         ("POST",   r"^/api/artifacts$",                        "ep_upload"),
         ("GET",    r"^/api/artifacts$",                        "ep_list_art"),
         ("GET",    r"^/api/artifacts/(?P<id>[^/]+)$",          "ep_get_art"),
@@ -1032,6 +1034,31 @@ class Handler(BaseHTTPRequestHandler):
         self.store.add_event(agent["id"], "task.requeued", row["id"])
         self._send_json(self.mesh.task_pub(self.store.get_task(row["id"])))
 
+    def ep_reassign(self, g):
+        # Orchestrator moves a task to a different agent — used when an assigned
+        # worker doesn't pick it up in a reasonable time (stale). Resets the task
+        # to queued under the new assignee so the new worker can pull it.
+        agent = self._auth()
+        self.mesh.require_role(agent, CAP_DISPATCH, "reassign tasks")
+        row = self._get_task_or_404(g["id"])
+        body = self._json_body()
+        to = (body.get("to") or "").strip()
+        if not to:
+            raise ValueError("to required")
+        target = self.store.get_agent(to)
+        if not target:
+            raise KeyError(f"no such agent: {to}")
+        # Only reassign work that hasn't been finished/reviewed.
+        if row["status"] in ("done", "approved", "rejected"):
+            raise ValueError(f"cannot reassign a task in status '{row['status']}'")
+        old = row["assigned_to"]
+        # Reset to queued under the new owner so they can pull it fresh.
+        self.store.update_task(row["id"], status="queued", assigned_to=to,
+                               result=None)
+        self.store.add_event(agent["id"], "task.reassigned", row["id"],
+                             {"from": old, "to": to})
+        self._send_json(self.mesh.task_pub(self.store.get_task(row["id"])))
+
     # ---- artifacts
     def ep_upload(self, g):
         agent = self._auth()
@@ -1251,11 +1278,21 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT id,title,priority,project_id FROM tasks WHERE status='queued' "
             "AND (assigned_to IS NULL OR assigned_to='') "
             "ORDER BY priority ASC, created_at ASC LIMIT 50")
+        # STALE tasks: assigned but not picked up / not finished within the
+        # window — candidates for reassignment to another agent.
+        stale_cutoff = now - STALE_TASK_S
+        stale = self.store.q(
+            "SELECT id,title,status,assigned_to,updated_at FROM tasks WHERE "
+            "status IN ('queued','claimed') AND assigned_to IS NOT NULL AND "
+            "assigned_to!='' AND updated_at < ? ORDER BY updated_at ASC LIMIT 50",
+            (stale_cutoff,))
         by_status = {r["status"]: r["n"] for r in self.store.q(
             "SELECT status, COUNT(*) n FROM tasks GROUP BY status")}
         self._send_json({
             "agents": agents,
             "unassigned_tasks": [dict(r) for r in unassigned],
+            "stale_tasks": [dict(r) for r in stale],
+            "stale_after_s": STALE_TASK_S,
             "tasks_by_status": by_status,
             "idle_agents": [a["id"] for a in agents if a["idle"]],
             "offline_agents": [a["id"] for a in agents if not a["online"]],

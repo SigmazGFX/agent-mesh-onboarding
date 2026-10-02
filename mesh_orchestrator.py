@@ -138,6 +138,13 @@ class Orchestrator:
         keep agents busy (assign unassigned work to idle agents)."""
         return self._call("GET", "/api/orch/swarm-view")
 
+    def reassign(self, task_id, to_agent_id):
+        """Move a stuck/stale task to another agent (resets it to queued under
+        the new owner). Use when an assigned worker doesn't pick up work in a
+        reasonable time."""
+        return self._call("POST", f"/api/tasks/{task_id}/reassign",
+                          {"to": to_agent_id})
+
     # -- reporting
     def project_status(self, pid):
         p = self.get_project(pid)
@@ -174,6 +181,8 @@ def _cli():
     sub.add_parser("members")
     p = sub.add_parser("project-status"); p.add_argument("project_id")
     sub.add_parser("swarm-view", help="who's online/working/idle + unassigned work")
+    p = sub.add_parser("reassign", help="move a stuck task to another agent")
+    p.add_argument("task_id"); p.add_argument("to_agent_id")
     args = ap.parse_args()
 
     o = Orchestrator()
@@ -201,6 +210,8 @@ def _cli():
         out = o.project_status(args.project_id)
     elif args.cmd == "swarm-view":
         out = o.swarm_view()
+    elif args.cmd == "reassign":
+        out = o.reassign(args.task_id, args.to_agent_id)
     print(json.dumps(out, indent=2))
 
 

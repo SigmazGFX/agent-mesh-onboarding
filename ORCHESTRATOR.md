@@ -43,6 +43,24 @@ When you say "build me X / do Y", the master's main agent:
 3. The subagent runs the loop and reports back a summary; the main agent relays
    it to you.
 
+### Orchestrator subagent lifecycle
+
+The orchestrator is a **per-project subagent**: it is *initialized and activated
+when the project starts*, owns the project from that point forward, and is
+*deactivated when the project closes*. It is not a standing daemon — one
+subagent per project keeps contexts clean.
+
+| Phase | Who | What happens |
+|---|---|---|
+| **Initialize** | master main agent | Project created; orchestrator-role key minted (env `MESH_ORCH_KEY`). |
+| **Activate** | master main agent | `delegate_task` spawns the subagent with the verbatim prompt + brief. From here the subagent is responsible for project success. |
+| **Own & drive** | orchestrator subagent | Intake → plan → staff → dispatch (always `--assignee`) → track via `swarm-view`. Reassigns stale tasks, assigns unassigned work to idle agents, messages offline ones. Keeps attention on goals until done. |
+| **Report** | orchestrator subagent → main agent | Final summary: what was built, who did what, status, next actions. |
+| **Deactivate** | master main agent | Project closed (`close_project`); subagent winds down. Optionally revoke the per-project key + delete spawned members. |
+
+The main agent stays the clean admin (keys, join-keys, node health) and does NOT
+do project orchestration itself — that's the subagent's job once activated.
+
 ### Orchestrator subagent prompt (use verbatim)
 
 ```
@@ -74,9 +92,14 @@ Do this, in order:
 6. TRACK — Keep your attention on the project by polling the SWARM VIEW:
    python3 mesh_orchestrator.py swarm-view
    This shows who's online, what each agent is currently doing, who's idle,
-   and what work is still unassigned. Act on it: assign unassigned tasks to
-   idle agents, requeue fixable failures, message offline agents. Goal: nobody
-   idles while work remains. Also poll project-status for overall progress.
+   what work is unassigned, and which assigned tasks are STALE (untouched too
+   long). Act on it:
+   - Assign unassigned tasks to idle agents (--assignee).
+   - Reassign STALE tasks (an assigned worker didn't pick them up) to another
+     capable agent:  python3 mesh_orchestrator.py reassign <task_id> <other_agent_id>
+   - Message offline agents; requeue fixable failures.
+   Goal: nobody idles while work remains, and stuck work gets moved. Also poll
+   project-status for overall progress.
 7. REPORT — When done (or when you've made all progress you can), summarize:
    project id, task breakdown, who did what, current status, and next actions.
 
