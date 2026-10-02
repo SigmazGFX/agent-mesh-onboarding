@@ -24,7 +24,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-VERSION = "0.1"
+VERSION = "0.7"
 HEARTBEAT_WINDOW_S = 90          # seen within this window => online
 STALE_TASK_S = 300               # assigned task untouched for this long => stale (reassign candidate)
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024   # 200 MB per artifact
@@ -1667,7 +1667,7 @@ class Handler(BaseHTTPRequestHandler):
 UI_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>agent-mesh console</title>
+<title>agent-mesh console v__VERSION__</title>
 <style>
 :root{--bg:#fafafa;--fg:#1d1d1f;--mut:#6e6e73;--acc:#0a84ff;--card:#fff;
 --bd:#e5e5ea;--ok:#30d158;--warn:#ff9f0a;--bad:#ff453a}
