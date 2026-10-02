@@ -79,8 +79,9 @@ join_YYYYYYYYYY
 the join key can be re-issued anytime (which invalidates the old one).
 
 > For a public/remote master (e.g. behind a reverse proxy on a shared domain),
-> see [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) — run with `--base-path /agent-mesh`
-> and add one proxy rule.
+> see [`EXPOSURE.md`](EXPOSURE.md) for the decision framework + security
+> checklist, and [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) for the proxy config —
+> run with `--base-path /agent-mesh` and add one proxy rule.
 
 ---
 

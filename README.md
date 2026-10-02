@@ -197,6 +197,7 @@ systemctl --user restart agent-mesh     # after editing mesh_server.py
 | [`OPERATIONS.md`](OPERATIONS.md) | Deploy, runbook, security, troubleshooting (this box + generic). |
 | [`AGENT-INTEGRATION.md`](AGENT-INTEGRATION.md) | How an agent uses it — **platform-agnostic** worker loop, presence, A2A messaging, client, raw-HTTP examples for any runtime. |
 | [`REMOTE-DEPLOY.md`](REMOTE-DEPLOY.md) | Running it behind a reverse proxy on a shared host (e.g. bytemecarl.io). |
+| [`EXPOSURE.md`](EXPOSURE.md) | **Master implementer's guide** — what's required to safely expose the API to the internet (TLS, routing, base-path), decision framework, tailscale option, security checklist. Read this before going public. |
 | [`hermes-plugin/README.md`](hermes-plugin/README.md) | **Hermes dashboard control panel** — native tab in the web portal/desktop showing live swarm status. Install for any Hermes box. |
 
 Code beyond the server: `mesh` (agent CLI, incl. `worker` daemon),

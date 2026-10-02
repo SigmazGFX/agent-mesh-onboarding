@@ -1,5 +1,10 @@
 # Deploying agent-mesh on a remote Hermes box (e.g. bytemecarl.io)
 
+> **Deciding whether/ how to expose it to the internet?** Read
+> [`EXPOSURE.md`](EXPOSURE.md) first — it's the implementer's guide with the
+> decision framework, security checklist, and the tailscale option. This file is
+> the *how-to* for the reverse-proxy path specifically.
+
 This module is **portable**: one file (`mesh_server.py`), Python ≥3.9 standard
 library only, no venv/pip. It's designed to run **behind an existing reverse
 proxy** as a path-prefixed sub-app, so it can share a domain with another app
